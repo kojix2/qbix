@@ -1,0 +1,20 @@
+[package]
+name = "qbix"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.87"
+build = "build.rs"
+license = "MIT"
+description = "Random access to BAM records by read name using a compact .qbi index"
+repository = "https://github.com/kojix2/qbix"
+keywords = ["bioinformatics", "bam", "htslib", "sam", "genomics"]
+categories = ["command-line-utilities", "science"]
+exclude = ["/.github"]
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+clap = { version = "4.6.1", default-features = false, features = ["std", "help", "usage"] }
+memmap2 = "0.9.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }

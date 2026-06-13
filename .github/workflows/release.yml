@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  HTSLIB_VERSION: 1.23.1
+  LIBDEFLATE_VERSION: 1.25
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Create GitHub release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            bzip2 \
+            ca-certificates \
+            cmake \
+            curl \
+            pkg-config \
+            zlib1g-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config
+
+      - name: Cache static libdeflate
+        id: cache-libdeflate
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/libdeflate
+          key: ${{ matrix.target }}-libdeflate-${{ env.LIBDEFLATE_VERSION }}-pic
+
+      - name: Build static libdeflate on Linux
+        if: runner.os == 'Linux' && steps.cache-libdeflate.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/ebiggers/libdeflate/releases/download/v${LIBDEFLATE_VERSION}/libdeflate-${LIBDEFLATE_VERSION}.tar.gz" -o "${RUNNER_TEMP}/libdeflate.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/libdeflate.tar.gz" -C "${RUNNER_TEMP}"
+          cmake -S "${RUNNER_TEMP}/libdeflate-${LIBDEFLATE_VERSION}" -B "${RUNNER_TEMP}/libdeflate-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/libdeflate" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
+            -DLIBDEFLATE_BUILD_GZIP=OFF \
+            -DLIBDEFLATE_BUILD_TESTS=OFF
+          cmake --build "${RUNNER_TEMP}/libdeflate-build" --parallel "$(nproc)"
+          cmake --install "${RUNNER_TEMP}/libdeflate-build"
+
+      - name: Build static libdeflate on macOS
+        if: runner.os == 'macOS' && steps.cache-libdeflate.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/ebiggers/libdeflate/releases/download/v${LIBDEFLATE_VERSION}/libdeflate-${LIBDEFLATE_VERSION}.tar.gz" -o "${RUNNER_TEMP}/libdeflate.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/libdeflate.tar.gz" -C "${RUNNER_TEMP}"
+          cmake -S "${RUNNER_TEMP}/libdeflate-${LIBDEFLATE_VERSION}" -B "${RUNNER_TEMP}/libdeflate-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/libdeflate" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
+            -DLIBDEFLATE_BUILD_GZIP=OFF \
+            -DLIBDEFLATE_BUILD_TESTS=OFF
+          cmake --build "${RUNNER_TEMP}/libdeflate-build" --parallel "$(sysctl -n hw.ncpu)"
+          cmake --install "${RUNNER_TEMP}/libdeflate-build"
+
+      - name: Use static libdeflate
+        run: |
+          test -f "${RUNNER_TEMP}/libdeflate/lib/libdeflate.a"
+          echo "LIBDEFLATE_PREFIX=${RUNNER_TEMP}/libdeflate" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_PATH=${RUNNER_TEMP}/libdeflate/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Cache static htslib
+        id: cache-htslib
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/htslib
+          key: ${{ matrix.target }}-htslib-${{ env.HTSLIB_VERSION }}-libdeflate-${{ env.LIBDEFLATE_VERSION }}-fpic
+
+      - name: Build static htslib on Linux
+        if: runner.os == 'Linux' && steps.cache-htslib.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/htslib-${HTSLIB_VERSION}.tar.bz2" -o "${RUNNER_TEMP}/htslib.tar.bz2"
+          tar -xjf "${RUNNER_TEMP}/htslib.tar.bz2" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/htslib-${HTSLIB_VERSION}"
+          CFLAGS="-fPIC" \
+          CPPFLAGS="-I${LIBDEFLATE_PREFIX}/include" \
+          LDFLAGS="-L${LIBDEFLATE_PREFIX}/lib" \
+            ./configure \
+            --prefix="${RUNNER_TEMP}/htslib" \
+            --disable-bz2 \
+            --disable-gcs \
+            --disable-libcurl \
+            --disable-lzma \
+            --disable-plugins \
+            --disable-ref-cache \
+            --disable-s3 \
+            --with-libdeflate
+          make -j"$(nproc)"
+          make install
+          rm -f "${RUNNER_TEMP}"/htslib/lib/libhts.so*
+
+      - name: Build static htslib on macOS
+        if: runner.os == 'macOS' && steps.cache-htslib.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/htslib-${HTSLIB_VERSION}.tar.bz2" -o "${RUNNER_TEMP}/htslib.tar.bz2"
+          tar -xjf "${RUNNER_TEMP}/htslib.tar.bz2" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/htslib-${HTSLIB_VERSION}"
+          CFLAGS="-fPIC" \
+          CPPFLAGS="-I${LIBDEFLATE_PREFIX}/include" \
+          LDFLAGS="-L${LIBDEFLATE_PREFIX}/lib" \
+            ./configure \
+            --prefix="${RUNNER_TEMP}/htslib" \
+            --disable-bz2 \
+            --disable-gcs \
+            --disable-libcurl \
+            --disable-lzma \
+            --disable-plugins \
+            --disable-ref-cache \
+            --disable-s3 \
+            --with-libdeflate
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          rm -f "${RUNNER_TEMP}"/htslib/lib/libhts.*.dylib "${RUNNER_TEMP}"/htslib/lib/libhts.dylib
+
+      - name: Use static htslib
+        run: |
+          test -f "${RUNNER_TEMP}/htslib/lib/libhts.a"
+          echo "HTSDIR=${RUNNER_TEMP}/htslib" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_PATH=${RUNNER_TEMP}/htslib/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Upload release binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: qbix
+          target: ${{ matrix.target }}
+          locked: true
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": ["cargo", "github-actions", "custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["HTSLIB_VERSION:\\s*\"?(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\"?"],
+      "depNameTemplate": "samtools/htslib",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["LIBDEFLATE_VERSION:\\s*\"?(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\"?"],
+      "depNameTemplate": "ebiggers/libdeflate",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["samtools/htslib", "ebiggers/libdeflate"],
+      "automerge": false,
+      "labels": ["dependencies", "native"]
+    },
+    {
+      "matchManagers": ["cargo", "github-actions"],
+      "automerge": false,
+      "labels": ["dependencies"]
+    }
+  ]
+}

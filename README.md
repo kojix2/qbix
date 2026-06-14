@@ -2,23 +2,23 @@
 
 [![Cargo Build & Test](https://github.com/kojix2/qbix/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/qbix/actions/workflows/ci.yml)
 
-`qbix` retrieves BAM records by read name using a `.qbi` index.
+`qbix` indexes and retrieves BAM records by QNAME (read name) using a `.qbi`
+index.
 
-Use it when you need records for one or more read names from a BAM file without
+Use it when you need records for one or more QNAMEs from a BAM file without
 scanning the file.
 
 The index stores:
 
-- XXH3-64 hashes of read names
+- XXH3-64 hashes of QNAMEs
 - BGZF virtual offsets
 - BAM size, mtime, and header hash for stale-index detection
 
 The `.qbi` file format is documented in [docs/qbi-format.md](docs/qbi-format.md).
 
 `qbix` was inspired by [jts/bri](https://github.com/jts/bri). `.qbi` is not
-compatible with `.bri`. `.qbi` stores read-name hashes and BGZF virtual offsets
-instead of read names. Lookup candidates are checked against BAM `QNAME` before
-output.
+compatible with `.bri`. `.qbi` stores QNAME hashes and BGZF virtual offsets
+instead of names. Lookup candidates are checked against BAM `QNAME` before output.
 
 ## Install
 
@@ -87,7 +87,7 @@ This writes:
 reads.bam.qbi
 ```
 
-Fetch records by read name. Output is SAM:
+Fetch records by QNAME. Output is SAM:
 
 ```sh
 qbix get reads.bam read_a read_b

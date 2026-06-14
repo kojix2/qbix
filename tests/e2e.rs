@@ -192,10 +192,13 @@ fn no_arguments_prints_help_to_stderr_and_fails() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Usage: qbix <COMMAND>"));
+    assert!(stderr.starts_with('\n'));
+    assert!(stderr.contains("Program: qbix"));
+    assert!(stderr.contains("Version:"));
+    assert!(stderr.contains("Source:"));
+    assert!(stderr.contains("Usage:   qbix <command> [options]"));
     assert!(stderr.contains("no subcommand provided"));
     assert!(stderr.contains("[qbix] no subcommand provided"));
-    assert!(stderr.lines().any(|line| line == "Usage: qbix <COMMAND>"));
 }
 
 #[test]
@@ -211,6 +214,20 @@ fn subcommand_without_required_arguments_prints_help_to_stderr_and_fails() {
     assert!(stderr.contains("required"));
     assert!(stderr.lines().any(|line| line.starts_with("[qbix]")));
     assert!(stderr.lines().any(|line| line.starts_with("Usage:")));
+}
+
+#[test]
+fn subcommand_help_starts_with_blank_line() {
+    let output = Command::new(qbix())
+        .args(["index", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with('\n'));
+    assert!(stderr.contains("Build a QNAME index for a BAM file"));
 }
 
 #[test]

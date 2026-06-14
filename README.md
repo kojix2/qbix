@@ -1,7 +1,7 @@
 # qbix
 
 [![Cargo Build & Test](https://github.com/kojix2/qbix/actions/workflows/ci.yml/badge.svg)](https://github.com/kojix2/qbix/actions/workflows/ci.yml)
-![Crates.io Version](https://img.shields.io/crates/v/qbix)
+[![Crates.io Version](https://img.shields.io/crates/v/qbix)](https://crates.io/crates/qbix)
 [![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2Fkojix2%2Fqbix%2Flines)](https://tokei.kojix2.net/github/kojix2/qbix)
 
 `qbix` indexes and retrieves BAM records by QNAME (read name) using a `.qbi`

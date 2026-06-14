@@ -13,6 +13,8 @@ The index stores:
 - BGZF virtual offsets
 - BAM size, mtime, and header hash for stale-index detection
 
+The `.qbi` file format is documented in [docs/qbi-format.md](docs/qbi-format.md).
+
 `qbix` was inspired by [jts/bri](https://github.com/jts/bri). `.qbi` is not
 compatible with `.bri`. `.qbi` stores read-name hashes and BGZF virtual offsets
 instead of read names. Lookup candidates are checked against BAM `QNAME` before

@@ -50,7 +50,7 @@ pub(crate) fn build_index(
         if verbose && (index.record_count() == 1 || index.record_count().is_multiple_of(100_000)) {
             let last = index.last_record()?.expect("record was just added");
             eprintln!(
-                "[qbix-build] record {} [{} {}] {}",
+                "[qbix] build: record {} [{} {}] {}",
                 index.record_count(),
                 last.qhash,
                 last.file_offset,
@@ -61,13 +61,13 @@ pub(crate) fn build_index(
     }
 
     if verbose {
-        eprintln!("[qbix-build] writing to disk...");
+        eprintln!("[qbix] build: writing to disk...");
     }
     let out_fn = generate_index_filename(Some(input_bam), output_index)?;
     index.save(&out_fn, bam_metadata)?;
     if verbose {
         eprintln!(
-            "[qbix-build] wrote index for {} records.",
+            "[qbix] build: wrote index for {} records.",
             index.record_count()
         );
     }
@@ -133,39 +133,39 @@ pub(crate) fn check_index(
     verbose: bool,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
-        .map_err(|_| "[qbix-check] could not open BAM file".to_string())?;
+        .map_err(|_| "[qbix] check: could not open BAM file".to_string())?;
     bam.set_threads(threads)
-        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
     bam.set_bgzf_cache_size(BGZF_CACHE_SIZE)
-        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
     let header = bam
         .read_header()
-        .map_err(|_| "[qbix-check] could not read BAM header".to_string())?;
+        .map_err(|_| "[qbix] check: could not read BAM header".to_string())?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)
-        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
     let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))
-        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
     let rec =
-        BamRecord::new().map_err(|_| "[qbix-check] could not allocate BAM record".to_string())?;
+        BamRecord::new().map_err(|_| "[qbix] check: could not allocate BAM record".to_string())?;
 
     let mut checked = 0usize;
     for idx in 0..index.record_count() {
         let record = index.record(idx)?;
         bam.read_record_at(&header, &rec, record.file_offset)
-            .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
+            .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
         let got = rec.qname()?;
         let got_hash = qname_hash64(got.as_bytes());
         if verbose {
-            eprintln!("[qbix-check] {} {}", record.qhash, got_hash);
+            eprintln!("[qbix] check: {} {}", record.qhash, got_hash);
         }
         if got_hash != record.qhash {
             return Err(
-                "[qbix-check] lookup returned a record with the wrong read name hash".to_string(),
+                "[qbix] check: lookup returned a record with the wrong read name hash".to_string(),
             );
         }
         checked += 1;
         if !verbose && checked.is_multiple_of(1_000_000) {
-            eprintln!("[qbix-check] checked {checked} records...");
+            eprintln!("[qbix] check: checked {checked} records...");
         }
     }
     Ok(())

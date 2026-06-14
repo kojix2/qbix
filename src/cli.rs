@@ -98,9 +98,9 @@ where
             if let Some(command_name) = subcommand_name.as_deref() {
                 print_subcommand_help(command_name)?;
             }
-            return Err(err.to_string());
+            return Err(prefix_error(&err));
         }
-        Err(err) => return Err(err.to_string()),
+        Err(err) => return Err(prefix_error(&err)),
     };
 
     match matches.subcommand() {
@@ -202,6 +202,17 @@ fn write_command_help(command: &mut Command) -> Result<()> {
         .map_err(|e| format!("[qbix] could not write help text: {e}"))?;
     writeln!(&mut stderr).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
     Ok(())
+}
+
+fn prefix_error(err: &clap::Error) -> String {
+    let message = err
+        .to_string()
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("argument error")
+        .trim_start_matches("error: ")
+        .to_string();
+    format!("[qbix] {message}")
 }
 
 fn subcommand(name: &str) -> Option<Command> {

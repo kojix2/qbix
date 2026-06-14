@@ -194,6 +194,8 @@ fn no_arguments_prints_help_to_stderr_and_fails() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Usage: qbix <COMMAND>"));
     assert!(stderr.contains("no subcommand provided"));
+    assert!(stderr.contains("[qbix] no subcommand provided"));
+    assert!(stderr.lines().any(|line| line == "Usage: qbix <COMMAND>"));
 }
 
 #[test]
@@ -207,6 +209,8 @@ fn subcommand_without_required_arguments_prints_help_to_stderr_and_fails() {
     assert!(stderr.contains("check"));
     assert!(stderr.contains("<input.bam>"));
     assert!(stderr.contains("required"));
+    assert!(stderr.lines().any(|line| line.starts_with("[qbix]")));
+    assert!(stderr.lines().any(|line| line.starts_with("Usage:")));
 }
 
 #[test]

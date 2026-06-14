@@ -52,7 +52,7 @@ pub extern "C" fn qbix_validate_index(
         let bam_path = cstr_arg(bam_path, "bam_path")?;
         let index_path = optional_cstr_arg(index_path, "index_path")?;
         validate_threads(threads)?;
-        commands::test_index(bam_path, index_path, threads, false)
+        commands::check_index(bam_path, index_path, threads, false)
     })
 }
 

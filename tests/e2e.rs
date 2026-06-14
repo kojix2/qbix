@@ -7,14 +7,14 @@ use std::process::Command;
 use common::{write_unmapped_bam, TempDir};
 
 #[test]
-fn indexes_gets_shows_and_tests_a_synthetic_bam() {
+fn indexes_gets_shows_and_checks_a_synthetic_bam() {
     let temp = TempDir::new("e2e");
     let bam = temp.path().join("reads.bam");
     let bam = bam.to_str().unwrap();
     write_unmapped_bam(bam, &["read_b", "read_a", "read_a", "read_c"]);
 
     assert_success(Command::new(qbix()).args(["index", bam]));
-    assert_success(Command::new(qbix()).args(["test", bam]));
+    assert_success(Command::new(qbix()).args(["check", bam]));
 
     let get = Command::new(qbix())
         .args(["get", bam, "read_a", "read_c"])
@@ -142,7 +142,7 @@ fn empty_bam_indexes_and_queries_cleanly() {
     write_unmapped_bam(bam, &[]);
 
     assert_success(Command::new(qbix()).args(["index", bam]));
-    assert_success(Command::new(qbix()).args(["test", bam]));
+    assert_success(Command::new(qbix()).args(["check", bam]));
 
     let get = Command::new(qbix())
         .args(["get", bam, "anything"])
@@ -197,6 +197,19 @@ fn no_arguments_prints_help_to_stderr_and_fails() {
 }
 
 #[test]
+fn subcommand_without_required_arguments_prints_help_to_stderr_and_fails() {
+    let output = Command::new(qbix()).arg("check").output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Usage:"));
+    assert!(stderr.contains("check"));
+    assert!(stderr.contains("<input.bam>"));
+    assert!(stderr.contains("required"));
+}
+
+#[test]
 fn accepts_threads_option_for_htslib_backed_commands() {
     let temp = TempDir::new("threads");
     let bam = temp.path().join("reads.bam");
@@ -204,7 +217,7 @@ fn accepts_threads_option_for_htslib_backed_commands() {
     write_unmapped_bam(bam, &["read_a", "read_b"]);
 
     assert_success(Command::new(qbix()).args(["index", "-@", "2", bam]));
-    assert_success(Command::new(qbix()).args(["test", "--threads", "2", bam]));
+    assert_success(Command::new(qbix()).args(["check", "--threads", "2", bam]));
 
     let get = Command::new(qbix())
         .args(["get", "-@", "2", bam, "read_b"])

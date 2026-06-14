@@ -126,46 +126,46 @@ pub(crate) fn show_index(input_index: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn test_index(
+pub(crate) fn check_index(
     input_bam: &str,
     input_index: Option<&str>,
     threads: usize,
     verbose: bool,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
-        .map_err(|_| "[qbix-test] could not open BAM file".to_string())?;
+        .map_err(|_| "[qbix-check] could not open BAM file".to_string())?;
     bam.set_threads(threads)
-        .map_err(|e| e.replace("[qbix]", "[qbix-test]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
     bam.set_bgzf_cache_size(BGZF_CACHE_SIZE)
-        .map_err(|e| e.replace("[qbix]", "[qbix-test]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
     let header = bam
         .read_header()
-        .map_err(|_| "[qbix-test] could not read BAM header".to_string())?;
+        .map_err(|_| "[qbix-check] could not read BAM header".to_string())?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)
-        .map_err(|e| e.replace("[qbix]", "[qbix-test]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
     let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))
-        .map_err(|e| e.replace("[qbix]", "[qbix-test]"))?;
+        .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
     let rec =
-        BamRecord::new().map_err(|_| "[qbix-test] could not allocate BAM record".to_string())?;
+        BamRecord::new().map_err(|_| "[qbix-check] could not allocate BAM record".to_string())?;
 
     let mut checked = 0usize;
     for idx in 0..index.record_count() {
         let record = index.record(idx)?;
         bam.read_record_at(&header, &rec, record.file_offset)
-            .map_err(|e| e.replace("[qbix]", "[qbix-test]"))?;
+            .map_err(|e| e.replace("[qbix]", "[qbix-check]"))?;
         let got = rec.qname()?;
         let got_hash = qname_hash64(got.as_bytes());
         if verbose {
-            eprintln!("[qbix-test] {} {}", record.qhash, got_hash);
+            eprintln!("[qbix-check] {} {}", record.qhash, got_hash);
         }
         if got_hash != record.qhash {
             return Err(
-                "[qbix-test] lookup returned a record with the wrong read name hash".to_string(),
+                "[qbix-check] lookup returned a record with the wrong read name hash".to_string(),
             );
         }
         checked += 1;
         if !verbose && checked.is_multiple_of(1_000_000) {
-            eprintln!("[qbix-test] checked {checked} records...");
+            eprintln!("[qbix-check] checked {checked} records...");
         }
     }
     Ok(())

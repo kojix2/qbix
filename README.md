@@ -134,7 +134,7 @@ qbix get --bam-order reads.bam read_a read_b | samtools sort -N -O SAM -
 Check an index against its BAM:
 
 ```sh
-qbix test reads.bam
+qbix check reads.bam
 ```
 
 Show raw index rows:
@@ -152,7 +152,7 @@ qhash<TAB>voff
 Print the version:
 
 ```sh
-qbix version
+qbix --version
 ```
 
 ## Notes

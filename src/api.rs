@@ -118,7 +118,7 @@ where
     validate_threads(options.threads)?;
     let input_bam = path_to_str(input_bam.as_ref(), "BAM path")?;
     let index_path = optional_path_to_str(options.index_path.as_deref(), "index path")?;
-    commands::test_index(
+    commands::check_index(
         input_bam,
         index_path.as_deref(),
         options.threads,

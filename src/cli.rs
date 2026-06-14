@@ -4,6 +4,11 @@ use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, Command};
 use std::io::Write;
 
+const COMMAND_INDEX: &str = "index";
+const COMMAND_GET: &str = "get";
+const COMMAND_SHOW: &str = "show";
+const COMMAND_CHECK: &str = "check";
+
 pub fn run<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = String>,
@@ -29,16 +34,12 @@ where
             order,
         ),
         Action::Show { input_index } => commands::show_index(&input_index),
-        Action::Test {
+        Action::Check {
             input_bam,
             input_index,
             threads,
             verbose,
-        } => commands::test_index(&input_bam, input_index.as_deref(), threads, verbose),
-        Action::Version => {
-            println!("{VERSION}");
-            Ok(())
-        }
+        } => commands::check_index(&input_bam, input_index.as_deref(), threads, verbose),
         Action::HelpDisplayed => Ok(()),
     }
 }
@@ -61,13 +62,12 @@ enum Action {
     Show {
         input_index: String,
     },
-    Test {
+    Check {
         input_bam: String,
         input_index: Option<String>,
         threads: usize,
         verbose: bool,
     },
-    Version,
     HelpDisplayed,
 }
 
@@ -77,13 +77,10 @@ where
 {
     let args = args.into_iter().collect::<Vec<_>>();
     if args.len() == 1 {
-        let mut app = app();
-        let mut stderr = std::io::stderr();
-        app.write_help(&mut stderr)
-            .map_err(|e| format!("[qbix] could not write help text: {e}"))?;
-        writeln!(&mut stderr).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
+        write_command_help(&mut app())?;
         return Err("[qbix] no subcommand provided".to_string());
     }
+    let subcommand_name = args.get(1).cloned();
 
     let matches = match app().try_get_matches_from(args) {
         Ok(matches) => matches,
@@ -97,58 +94,66 @@ where
                 .map_err(|e| format!("[qbix] could not write help text: {e}"))?;
             return Ok(Action::HelpDisplayed);
         }
+        Err(err) if err.kind() == ErrorKind::MissingRequiredArgument => {
+            if let Some(command_name) = subcommand_name.as_deref() {
+                print_subcommand_help(command_name)?;
+            }
+            return Err(err.to_string());
+        }
         Err(err) => return Err(err.to_string()),
     };
 
     match matches.subcommand() {
-        Some(("index", matches)) => Ok(Action::Index {
+        Some((COMMAND_INDEX, matches)) => Ok(Action::Index {
             input_bam: required_string(matches, "input_bam")?.to_string(),
             output_index: optional_string(matches, "index"),
             verbose: matches.get_flag("verbose"),
             threads: threads(matches)?,
         }),
-        Some(("get", matches)) => Ok(Action::Get {
+        Some((COMMAND_GET, matches)) => Ok(Action::Get {
             input_bam: required_string(matches, "input_bam")?.to_string(),
             input_index: optional_string(matches, "index"),
             readnames: values(matches, "readnames")?,
             threads: threads(matches)?,
             order: get_order(matches),
         }),
-        Some(("show", matches)) => Ok(Action::Show {
+        Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
             input_index: required_string(matches, "input_index")?.to_string(),
         }),
-        Some(("test", matches)) => Ok(Action::Test {
+        Some((COMMAND_CHECK, matches)) => Ok(Action::Check {
             input_bam: required_string(matches, "input_bam")?.to_string(),
             input_index: optional_string(matches, "index"),
             threads: threads(matches)?,
             verbose: matches.get_flag("verbose"),
         }),
-        Some(("version", _)) => Ok(Action::Version),
-        _ => Err("[qbix] usage qbix <subprogram> [...]".to_string()),
+        _ => Err("[qbix] usage qbix <COMMAND> [...]".to_string()),
     }
 }
 
 fn app() -> Command {
     Command::new("qbix")
-        .disable_version_flag(true)
+        .about("Retrieve BAM records by read name using a QBI index")
+        .version(VERSION)
+        .disable_help_subcommand(true)
         .subcommand_required(true)
         .subcommand(index_command())
         .subcommand(get_command())
         .subcommand(show_command())
-        .subcommand(test_command())
-        .subcommand(Command::new("version"))
+        .subcommand(check_command())
 }
 
 fn index_command() -> Command {
-    Command::new("index")
+    Command::new(COMMAND_INDEX)
+        .about("Build a QBI index for a BAM file")
         .arg(index_arg("index_filename.qbi"))
         .arg(threads_arg())
         .arg(verbose_arg())
-        .arg(Arg::new("input_bam").required(true))
+        .arg(input_bam_arg())
 }
 
 fn get_command() -> Command {
-    Command::new("get")
+    Command::new(COMMAND_GET)
+        .about("Fetch BAM records by read name")
         .arg(index_arg("index_filename.qbi"))
         .arg(threads_arg())
         .arg(
@@ -163,20 +168,50 @@ fn get_command() -> Command {
                 .action(ArgAction::SetTrue)
                 .conflicts_with("bam_order"),
         )
-        .arg(Arg::new("input_bam").required(true))
-        .arg(Arg::new("readnames").required(true).num_args(1..))
+        .arg(input_bam_arg())
+        .arg(readnames_arg())
 }
 
 fn show_command() -> Command {
-    Command::new("show").arg(Arg::new("input_index").required(true))
+    Command::new(COMMAND_SHOW)
+        .about("Print raw QBI index rows")
+        .arg(input_index_arg())
 }
 
-fn test_command() -> Command {
-    Command::new("test")
+fn check_command() -> Command {
+    Command::new(COMMAND_CHECK)
+        .about("Validate a QBI index against its BAM file")
         .arg(index_arg("index_filename.qbi"))
         .arg(threads_arg())
         .arg(verbose_arg())
-        .arg(Arg::new("input_bam").required(true))
+        .arg(input_bam_arg())
+}
+
+fn print_subcommand_help(command_name: &str) -> Result<()> {
+    let Some(mut command) = subcommand(command_name) else {
+        return Ok(());
+    };
+    command = command.bin_name(format!("qbix {command_name}"));
+    write_command_help(&mut command)
+}
+
+fn write_command_help(command: &mut Command) -> Result<()> {
+    let mut stderr = std::io::stderr();
+    command
+        .write_help(&mut stderr)
+        .map_err(|e| format!("[qbix] could not write help text: {e}"))?;
+    writeln!(&mut stderr).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
+    Ok(())
+}
+
+fn subcommand(name: &str) -> Option<Command> {
+    match name {
+        COMMAND_INDEX => Some(index_command()),
+        COMMAND_GET => Some(get_command()),
+        COMMAND_SHOW => Some(show_command()),
+        COMMAND_CHECK => Some(check_command()),
+        _ => None,
+    }
 }
 
 fn index_arg(value_name: &'static str) -> Arg {
@@ -184,6 +219,23 @@ fn index_arg(value_name: &'static str) -> Arg {
         .short('i')
         .long("index")
         .value_name(value_name)
+}
+
+fn input_bam_arg() -> Arg {
+    Arg::new("input_bam").value_name("input.bam").required(true)
+}
+
+fn input_index_arg() -> Arg {
+    Arg::new("input_index")
+        .value_name("input.qbi")
+        .required(true)
+}
+
+fn readnames_arg() -> Arg {
+    Arg::new("readnames")
+        .value_name("readname")
+        .required(true)
+        .num_args(1..)
 }
 
 fn threads_arg() -> Arg {
@@ -322,12 +374,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_test_options() {
-        let action = parse_args(strings(["qbix", "test", "-v", "-@", "2", "reads.bam"])).unwrap();
+    fn parses_check_options() {
+        let action = parse_args(strings(["qbix", "check", "-v", "-@", "2", "reads.bam"])).unwrap();
 
         assert_eq!(
             action,
-            Action::Test {
+            Action::Check {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 threads: 2,
@@ -340,6 +392,23 @@ mod tests {
     fn rejects_get_without_readname() {
         let err = parse_args(strings(["qbix", "get", "reads.bam"])).unwrap_err();
         assert!(err.contains("required"));
+    }
+
+    #[test]
+    fn accepts_version_flag() {
+        let action = parse_args(strings(["qbix", "--version"])).unwrap();
+        assert_eq!(action, Action::HelpDisplayed);
+    }
+
+    #[test]
+    fn help_lists_subcommand_descriptions() {
+        let mut app = app();
+        let help = app.render_help().to_string();
+
+        assert!(help.contains("Build a QBI index for a BAM file"));
+        assert!(help.contains("Fetch BAM records by read name"));
+        assert!(help.contains("Print raw QBI index rows"));
+        assert!(help.contains("Validate a QBI index against its BAM file"));
     }
 
     fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {

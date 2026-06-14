@@ -18,13 +18,27 @@ compatible with `.bri`. `.qbi` stores read-name hashes and BGZF virtual offsets
 instead of read names. Lookup candidates are checked against BAM `QNAME` before
 output.
 
-## Requirements
+## Install
+
+Download a prebuilt binary from [GitHub Releases](https://github.com/kojix2/qbix/releases).
+
+## Build From Source
+
+Requirements:
 
 - Rust and Cargo
 - htslib
 - `pkg-config` recommended
 
-## Build
+Install htslib and `pkg-config` with your system package manager:
+
+```sh
+# macOS
+brew install htslib pkg-config
+
+# Ubuntu/Debian
+sudo apt-get install libhts-dev pkg-config
+```
 
 ```sh
 cargo build --release
@@ -47,6 +61,15 @@ For static htslib linking:
 ```sh
 HTSLIB_STATIC=1 cargo build --release
 ```
+
+You can also build and install from crates.io:
+
+```sh
+cargo install qbix
+```
+
+The crates.io install builds from source and expects htslib headers and
+libraries to be available on the system.
 
 ## Basic Use
 

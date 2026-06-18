@@ -1,0 +1,12 @@
+title: qbix
+
+include:
+  - README.md
+  - docs
+
+exclude:
+  - Cargo.*
+  - build.rs
+  - renovate.json
+  - "{include,src,target,tests}"
+  - ".*"

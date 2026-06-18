@@ -1,12 +1,27 @@
 title: qbix
+theme: minima
 
-include:
-  - README.md
-  - docs
+plugins:
+  - jekyll-optional-front-matter
+  - jekyll-titles-from-headings
+
+header_pages:
+  - docs/qbi-format.md
+
+defaults:
+  - scope:
+      path: README.md
+    values:
+      layout: page
+      permalink: /
 
 exclude:
   - Cargo.*
+  - LICENSE
   - build.rs
+  - include/
   - renovate.json
-  - "{include,src,target,tests}"
+  - src/
+  - target/
+  - tests/
   - ".*"

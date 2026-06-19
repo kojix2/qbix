@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::hts::{BamRecord, HtsFile};
+use crate::hts::{BamRecord, Header, HtsFile};
 use crate::index::{generate_index_filename, qname_hash64, BamMetadata, Index};
 
 const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
@@ -139,6 +139,10 @@ pub(crate) fn get_records(
     }
     let rec = BamRecord::new()?;
 
+    if order == GetOrder::Query {
+        return write_hits_in_query_order(&bam, &header, &out, &rec, &index, readnames);
+    }
+
     let mut hits = Vec::new();
     for readname in readnames {
         for idx in index.range_indices(readname)? {
@@ -149,14 +153,32 @@ pub(crate) fn get_records(
             });
         }
     }
-    if order == GetOrder::Bam {
-        hits.sort_by_key(|hit| hit.file_offset);
-    }
+    hits.sort_by_key(|hit| hit.file_offset);
 
     for hit in hits {
         bam.read_record_at(&header, &rec, hit.file_offset)?;
         if rec.qname()? == hit.readname {
             out.write_record(&header, &rec)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_hits_in_query_order(
+    bam: &HtsFile,
+    header: &Header,
+    out: &HtsFile,
+    rec: &BamRecord,
+    index: &Index,
+    readnames: &[String],
+) -> Result<()> {
+    for readname in readnames {
+        for idx in index.range_indices(readname)? {
+            let record = index.record(idx)?;
+            bam.read_record_at(header, rec, record.file_offset)?;
+            if rec.qname()? == readname {
+                out.write_record(header, rec)?;
+            }
         }
     }
     Ok(())

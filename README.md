@@ -138,12 +138,16 @@ qbix get reads.bam read_a read_b
 qbix get --query-order reads.bam read_a read_b
 ```
 
+Query-order output streams lookups without collecting all hits in memory.
+
 For multiple read names, `--bam-order` reads records in BAM file-offset order.
 This can reduce random seeking:
 
 ```sh
 qbix get --bam-order reads.bam read_a read_b
 ```
+
+`--bam-order` must collect and sort matching hits before output.
 
 If name-sorted output is needed, sort downstream:
 

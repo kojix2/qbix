@@ -363,17 +363,29 @@ fn subcommand_without_required_arguments_prints_help_to_stderr_and_fails() {
 }
 
 #[test]
-fn subcommand_help_starts_with_blank_line() {
+fn explicit_help_prints_to_stdout() {
     let output = Command::new(qbix())
         .args(["index", "--help"])
         .output()
         .unwrap();
 
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.starts_with('\n'));
-    assert!(stderr.contains("Build a QNAME index for a BAM file"));
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with('\n'));
+    assert!(stdout.contains("Build a QNAME index for a BAM file"));
+}
+
+#[test]
+fn top_level_help_prints_to_stdout() {
+    let output = Command::new(qbix()).arg("--help").output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with('\n'));
+    assert!(stdout.contains("Program: qbix"));
+    assert!(stdout.contains("Usage:   qbix <command> [options]"));
 }
 
 #[test]

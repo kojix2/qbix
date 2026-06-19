@@ -92,11 +92,11 @@ where
 {
     let args = args.into_iter().collect::<Vec<_>>();
     if let Some(mut command) = help_command(&args) {
-        write_command_help(&mut command)?;
+        write_command_help_stdout(&mut command)?;
         return Ok(Action::HelpDisplayed);
     }
     if args.len() == 1 {
-        write_command_help(&mut app())?;
+        write_command_help_stderr(&mut app())?;
         return Err("[qbix] no subcommand provided".to_string());
     }
 
@@ -320,16 +320,28 @@ fn print_subcommand_help(command_name: &str) -> Result<()> {
     let Some(mut command) = command_for_help(command_name) else {
         return Ok(());
     };
-    write_command_help(&mut command)
+    write_command_help_stderr(&mut command)
 }
 
-fn write_command_help(command: &mut Command) -> Result<()> {
+fn write_command_help_stdout(command: &mut Command) -> Result<()> {
+    let mut stdout = std::io::stdout();
+    write_command_help(command, &mut stdout)
+}
+
+fn write_command_help_stderr(command: &mut Command) -> Result<()> {
     let mut stderr = std::io::stderr();
-    writeln!(&mut stderr).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
+    write_command_help(command, &mut stderr)
+}
+
+fn write_command_help<W>(command: &mut Command, writer: &mut W) -> Result<()>
+where
+    W: Write,
+{
+    writeln!(writer).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
     command
-        .write_help(&mut stderr)
+        .write_help(writer)
         .map_err(|e| format!("[qbix] could not write help text: {e}"))?;
-    writeln!(&mut stderr).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
+    writeln!(writer).map_err(|e| format!("[qbix] could not write help text: {e}"))?;
     Ok(())
 }
 

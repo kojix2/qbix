@@ -16,6 +16,12 @@ pub(crate) enum OutputFormat {
     Bam,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckMode {
+    Quick,
+    Full,
+}
+
 impl OutputFormat {
     fn hts_mode(self) -> &'static str {
         match self {
@@ -164,6 +170,7 @@ pub(crate) fn check_index(
     input_index: Option<&str>,
     threads: usize,
     verbose: bool,
+    mode: CheckMode,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| "[qbix] check: could not open BAM file".to_string())?;
@@ -178,6 +185,10 @@ pub(crate) fn check_index(
         .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
     let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))
         .map_err(|e| e.replace("[qbix]", "[qbix] check:"))?;
+    if mode == CheckMode::Quick {
+        return Ok(());
+    }
+
     let rec =
         BamRecord::new().map_err(|_| "[qbix] check: could not allocate BAM record".to_string())?;
 

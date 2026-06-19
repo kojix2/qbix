@@ -153,10 +153,17 @@ qbix get --bam-order reads.bam read_a read_b | samtools sort -N -O SAM -
 
 ## Other Commands
 
-Check an index against its BAM:
+Quickly check that an index matches its BAM size, mtime, and header hash:
 
 ```sh
 qbix check reads.bam
+qbix check --quick reads.bam
+```
+
+Use `--full` to also seek to every indexed record and verify its read-name hash:
+
+```sh
+qbix check --full reads.bam
 ```
 
 Show raw index rows:
@@ -189,6 +196,14 @@ qbix --version
 
 ```rust
 let index_path = qbix::build_index("reads.bam", qbix::BuildOptions::default())?;
+qbix::check_index("reads.bam", qbix::CheckOptions::default())?;
+qbix::check_index(
+    "reads.bam",
+    qbix::CheckOptions {
+        mode: qbix::CheckMode::Full,
+        ..qbix::CheckOptions::default()
+    },
+)?;
 let bam = qbix::IndexedBam::open("reads.bam", qbix::LookupOptions::default())?;
 let hits = bam.lookup("read_a")?;
 ```
@@ -218,6 +233,7 @@ int main(void) {
     size_t n_hits = 0;
 
     if (qbix_build_index("reads.bam", 0, 1) != 0) return 1;
+    if (qbix_check_index("reads.bam", 0, 1, QBIX_CHECK_QUICK) != 0) return 1;
 
     qbix_index_t *idx = qbix_index_open("reads.bam", 0, 1);
     if (!idx) return 1;

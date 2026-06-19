@@ -17,6 +17,18 @@ fn c_api_builds_opens_looks_up_and_closes() {
         qbix::c_api::qbix_build_index(bam.as_ptr(), ptr::null(), 1),
         0
     );
+    assert_eq!(
+        qbix::c_api::qbix_check_index(bam.as_ptr(), ptr::null(), 1, qbix::c_api::QBIX_CHECK_QUICK,),
+        0,
+        "{}",
+        last_error()
+    );
+    assert_eq!(
+        qbix::c_api::qbix_check_index(bam.as_ptr(), ptr::null(), 1, qbix::c_api::QBIX_CHECK_FULL,),
+        0,
+        "{}",
+        last_error()
+    );
 
     let index = qbix::c_api::qbix_index_open(bam.as_ptr(), ptr::null(), 1);
     assert!(!index.is_null(), "{}", last_error());
@@ -45,6 +57,24 @@ fn c_api_reports_last_error() {
     let ret = qbix::c_api::qbix_build_index(ptr::null(), ptr::null(), 1);
     assert_eq!(ret, -1);
     assert!(last_error().contains("bam_path is null"));
+}
+
+#[test]
+fn c_api_rejects_unknown_check_mode() {
+    let temp = TempDir::new("c-api-check-mode");
+    let bam = temp.path().join("reads.bam");
+    let bam_str = bam.to_str().unwrap();
+    write_unmapped_bam(bam_str, &["read_a"]);
+
+    let bam = CString::new(bam_str).unwrap();
+    assert_eq!(
+        qbix::c_api::qbix_build_index(bam.as_ptr(), ptr::null(), 1),
+        0
+    );
+
+    let ret = qbix::c_api::qbix_check_index(bam.as_ptr(), ptr::null(), 1, 99);
+    assert_eq!(ret, -1);
+    assert!(last_error().contains("unsupported check mode"));
 }
 
 fn last_error() -> String {

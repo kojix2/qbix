@@ -1,4 +1,4 @@
-use crate::commands::{self, GetOrder, OutputFormat};
+use crate::commands::{self, CheckMode, GetOrder, OutputFormat};
 use crate::error::Result;
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -22,6 +22,8 @@ const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
+const ARG_QUICK: &str = "quick";
+const ARG_FULL: &str = "full";
 const SOURCE_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const TOP_LEVEL_HELP_TEMPLATE: &str = "\
 Program: qbix
@@ -70,7 +72,8 @@ where
             input_index,
             threads,
             verbose,
-        } => commands::check_index(&input_bam, input_index.as_deref(), threads, verbose),
+            mode,
+        } => commands::check_index(&input_bam, input_index.as_deref(), threads, verbose, mode),
         Action::HelpDisplayed => Ok(()),
     }
 }
@@ -139,6 +142,7 @@ enum Action {
         input_index: Option<String>,
         threads: usize,
         verbose: bool,
+        mode: CheckMode,
     },
     HelpDisplayed,
 }
@@ -168,6 +172,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             input_index: optional_string(matches, ARG_INDEX),
             threads: threads(matches)?,
             verbose: matches.get_flag(ARG_VERBOSE),
+            mode: check_mode(matches),
         }),
         _ => Err("[qbix] usage qbix <COMMAND> [...]".to_string()),
     }
@@ -257,10 +262,24 @@ fn show_command() -> Command {
 
 fn check_command() -> Command {
     Command::new(COMMAND_CHECK)
-        .about("Validate a QBI index against its BAM file")
+        .about("Check a QBI index against its BAM file")
         .arg(index_arg())
         .arg(threads_arg())
         .arg(verbose_arg())
+        .arg(
+            Arg::new(ARG_QUICK)
+                .long("quick")
+                .action(ArgAction::SetTrue)
+                .help("Only check BAM size, mtime, and header hash")
+                .conflicts_with(ARG_FULL),
+        )
+        .arg(
+            Arg::new(ARG_FULL)
+                .long("full")
+                .action(ArgAction::SetTrue)
+                .help("Also seek to every indexed record and verify its QNAME hash")
+                .conflicts_with(ARG_QUICK),
+        )
         .arg(input_bam_arg())
 }
 
@@ -393,6 +412,14 @@ fn get_order(matches: &ArgMatches) -> GetOrder {
         GetOrder::Bam
     } else {
         GetOrder::Query
+    }
+}
+
+fn check_mode(matches: &ArgMatches) -> CheckMode {
+    if matches.get_flag(ARG_FULL) {
+        CheckMode::Full
+    } else {
+        CheckMode::Quick
     }
 }
 
@@ -656,7 +683,16 @@ mod tests {
 
     #[test]
     fn parses_check_options() {
-        let action = parse_args(strings(["qbix", "check", "-v", "-@", "2", "reads.bam"])).unwrap();
+        let action = parse_args(strings([
+            "qbix",
+            "check",
+            "-v",
+            "-@",
+            "2",
+            "--full",
+            "reads.bam",
+        ]))
+        .unwrap();
 
         assert_eq!(
             action,
@@ -665,6 +701,23 @@ mod tests {
                 input_index: None,
                 threads: 2,
                 verbose: true,
+                mode: CheckMode::Full,
+            }
+        );
+    }
+
+    #[test]
+    fn check_defaults_to_quick() {
+        let action = parse_args(strings(["qbix", "check", "reads.bam"])).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Check {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                threads: 1,
+                verbose: false,
+                mode: CheckMode::Quick,
             }
         );
     }
@@ -689,7 +742,7 @@ mod tests {
         assert!(help.contains("Build a QNAME index for a BAM file"));
         assert!(help.contains("Retrieve BAM records by QNAME"));
         assert!(help.contains("Print raw QBI index rows"));
-        assert!(help.contains("Validate a QBI index against its BAM file"));
+        assert!(help.contains("Check a QBI index against its BAM file"));
     }
 
     fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {

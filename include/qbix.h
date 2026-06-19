@@ -14,8 +14,16 @@ typedef struct qbix_hit_t {
     int64_t virtual_offset;
 } qbix_hit_t;
 
+typedef enum qbix_check_mode_t {
+    QBIX_CHECK_QUICK = 0,
+    QBIX_CHECK_FULL = 1
+} qbix_check_mode_t;
+
 int qbix_build_index(const char *bam_path, const char *index_path, size_t threads);
-int qbix_validate_index(const char *bam_path, const char *index_path, size_t threads);
+int qbix_check_index(const char *bam_path,
+                     const char *index_path,
+                     size_t threads,
+                     qbix_check_mode_t mode);
 
 /* qbix_index_t handles are not thread-safe. */
 qbix_index_t *qbix_index_open(const char *bam_path, const char *index_path, size_t threads);

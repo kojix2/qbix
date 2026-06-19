@@ -15,6 +15,8 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
 
     assert_success(Command::new(qbix()).args(["index", bam]));
     assert_success(Command::new(qbix()).args(["check", bam]));
+    assert_success(Command::new(qbix()).args(["check", "--quick", bam]));
+    assert_success(Command::new(qbix()).args(["check", "--full", bam]));
 
     let get = Command::new(qbix())
         .args(["get", bam, "read_a", "read_c"])

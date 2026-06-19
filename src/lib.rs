@@ -7,8 +7,8 @@ mod hts;
 mod index;
 
 pub use api::{
-    build_index, read_index_records, validate_index, BuildOptions, IndexRecord, IndexedBam,
-    LookupHit, LookupOptions, OutputOrder, ValidateOptions, VirtualOffset,
+    build_index, check_index, read_index_records, BuildOptions, CheckMode, CheckOptions,
+    IndexRecord, IndexedBam, LookupHit, LookupOptions, OutputOrder, VirtualOffset,
 };
 pub use error::{Error, PublicResult as Result};
 

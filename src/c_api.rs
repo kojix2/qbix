@@ -28,6 +28,10 @@ pub struct qbix_hit_t {
     pub virtual_offset: i64,
 }
 
+pub type qbix_check_mode_t = c_int;
+pub const QBIX_CHECK_QUICK: qbix_check_mode_t = 0;
+pub const QBIX_CHECK_FULL: qbix_check_mode_t = 1;
+
 #[no_mangle]
 pub extern "C" fn qbix_build_index(
     bam_path: *const c_char,
@@ -43,16 +47,18 @@ pub extern "C" fn qbix_build_index(
 }
 
 #[no_mangle]
-pub extern "C" fn qbix_validate_index(
+pub extern "C" fn qbix_check_index(
     bam_path: *const c_char,
     index_path: *const c_char,
     threads: usize,
+    mode: qbix_check_mode_t,
 ) -> c_int {
     c_status(|| {
         let bam_path = cstr_arg(bam_path, "bam_path")?;
         let index_path = optional_cstr_arg(index_path, "index_path")?;
         validate_threads(threads)?;
-        commands::check_index(bam_path, index_path, threads, false)
+        let mode = check_mode(mode)?;
+        commands::check_index(bam_path, index_path, threads, false, mode)
     })
 }
 
@@ -262,6 +268,14 @@ fn validate_threads(threads: usize) -> Result<(), String> {
         return Err("[qbix] threads must be a positive integer".to_string());
     }
     Ok(())
+}
+
+fn check_mode(mode: qbix_check_mode_t) -> Result<commands::CheckMode, String> {
+    match mode {
+        QBIX_CHECK_QUICK => Ok(commands::CheckMode::Quick),
+        QBIX_CHECK_FULL => Ok(commands::CheckMode::Full),
+        _ => Err(format!("[qbix] unsupported check mode: {mode}")),
+    }
 }
 
 fn clear_last_error() {

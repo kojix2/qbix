@@ -41,22 +41,31 @@ impl Default for LookupOptions {
     }
 }
 
-/// Options used when validating an index against its BAM file.
+/// Options used when checking an index against its BAM file.
 #[derive(Clone, Debug)]
-pub struct ValidateOptions {
+pub struct CheckOptions {
     pub index_path: Option<PathBuf>,
     pub threads: usize,
     pub verbose: bool,
+    pub mode: CheckMode,
 }
 
-impl Default for ValidateOptions {
+impl Default for CheckOptions {
     fn default() -> Self {
         Self {
             index_path: None,
             threads: 1,
             verbose: false,
+            mode: CheckMode::Quick,
         }
     }
+}
+
+/// Amount of validation performed by [`check_index`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckMode {
+    Quick,
+    Full,
 }
 
 /// Output ordering for multi-name record retrieval.
@@ -110,8 +119,11 @@ where
     Ok(PathBuf::from(written))
 }
 
-/// Validate that a `.qbi` index matches its BAM and points to records with matching hashes.
-pub fn validate_index<P>(input_bam: P, options: ValidateOptions) -> Result<()>
+/// Check that a `.qbi` index matches its BAM.
+///
+/// [`CheckMode::Quick`] checks BAM size, mtime, and header hash. [`CheckMode::Full`]
+/// additionally seeks to every indexed record and verifies its read-name hash.
+pub fn check_index<P>(input_bam: P, options: CheckOptions) -> Result<()>
 where
     P: AsRef<Path>,
 {
@@ -123,8 +135,18 @@ where
         index_path.as_deref(),
         options.threads,
         options.verbose,
+        options.mode.into(),
     )
     .map_err(Error::from)
+}
+
+impl From<CheckMode> for commands::CheckMode {
+    fn from(mode: CheckMode) -> Self {
+        match mode {
+            CheckMode::Quick => Self::Quick,
+            CheckMode::Full => Self::Full,
+        }
+    }
 }
 
 /// Read raw `(qhash, virtual offset)` rows from a `.qbi` index.

@@ -2,7 +2,7 @@ mod common;
 
 use std::fs;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use common::{write_unmapped_bam, TempDir};
 
@@ -89,6 +89,61 @@ fn get_can_emit_records_in_bam_order() {
         first_fields(&bam_order.stdout),
         ["read_b", "read_a", "read_a"]
     );
+}
+
+#[test]
+fn get_can_read_names_from_file() {
+    let temp = TempDir::new("readnames-file");
+    let bam = temp.path().join("reads.bam");
+    let names = temp.path().join("names.txt");
+    let bam = bam.to_str().unwrap();
+    let names = names.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_b", "read_c"]);
+    fs::write(names, "read_c\nread_a\n").unwrap();
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args(["get", bam, "-f", names])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_c", "read_a"]);
+}
+
+#[test]
+fn get_can_read_names_from_stdin() {
+    let temp = TempDir::new("readnames-stdin");
+    let bam = temp.path().join("reads.bam");
+    let bam = bam.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_b", "read_c"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let mut child = Command::new(qbix())
+        .args(["get", bam, "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"read_b\nread_a\n")
+        .unwrap();
+    let get = child.wait_with_output().unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_b", "read_a"]);
 }
 
 #[test]

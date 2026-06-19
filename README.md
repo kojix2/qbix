@@ -96,6 +96,18 @@ Fetch records by QNAME. Output is SAM:
 qbix get reads.bam read_a read_b
 ```
 
+Fetch records from a newline-delimited read-name file:
+
+```sh
+qbix get reads.bam -f names.txt
+```
+
+Use `-f -` to read names from stdin:
+
+```sh
+cat names.txt | qbix get reads.bam -f -
+```
+
 Use more htslib threads:
 
 ```sh

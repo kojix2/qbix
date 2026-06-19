@@ -2,6 +2,7 @@ use crate::commands::{self, GetOrder};
 use crate::error::Result;
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
+use std::io::BufRead;
 use std::io::Write;
 
 const APP_NAME: &str = "qbix";
@@ -17,6 +18,7 @@ const ARG_THREADS: &str = "threads";
 const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
+const ARG_READNAMES_FILE: &str = "readnames_file";
 const SOURCE_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const TOP_LEVEL_HELP_TEMPLATE: &str = "\
 Program: qbix
@@ -143,7 +145,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
         Some((COMMAND_GET, matches)) => Ok(Action::Get {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
             input_index: optional_string(matches, ARG_INDEX),
-            readnames: values(matches, ARG_READNAMES)?,
+            readnames: get_readnames(matches)?,
             threads: threads(matches)?,
             order: get_order(matches),
         }),
@@ -202,6 +204,13 @@ fn get_command() -> Command {
                 .action(ArgAction::SetTrue)
                 .help("Emit records in query order")
                 .conflicts_with(ARG_BAM_ORDER),
+        )
+        .arg(
+            Arg::new(ARG_READNAMES_FILE)
+                .short('f')
+                .long("file")
+                .value_name("readnames.txt")
+                .help("Read read names from a file, or '-' for stdin"),
         )
         .arg(input_bam_arg())
         .arg(readnames_arg())
@@ -303,7 +312,7 @@ fn readnames_arg() -> Arg {
     Arg::new(ARG_READNAMES)
         .value_name("readname")
         .help("Read name to fetch")
-        .required(true)
+        .required_unless_present(ARG_READNAMES_FILE)
         .num_args(1..)
 }
 
@@ -354,11 +363,47 @@ fn get_order(matches: &ArgMatches) -> GetOrder {
     }
 }
 
-fn values(matches: &ArgMatches, name: &str) -> Result<Vec<String>> {
+fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
     matches
         .get_many::<String>(name)
         .map(|values| values.cloned().collect())
-        .ok_or_else(|| format!("[qbix] missing required argument: {name}"))
+        .unwrap_or_default()
+}
+
+fn get_readnames(matches: &ArgMatches) -> Result<Vec<String>> {
+    let mut readnames = optional_values(matches, ARG_READNAMES);
+    if let Some(path) = matches.get_one::<String>(ARG_READNAMES_FILE) {
+        readnames.extend(readnames_from_path(path)?);
+    }
+    if readnames.is_empty() {
+        return Err("[qbix] missing required argument: readnames".to_string());
+    }
+    Ok(readnames)
+}
+
+fn readnames_from_path(path: &str) -> Result<Vec<String>> {
+    if path == "-" {
+        let stdin = std::io::stdin();
+        return readnames_from_reader(stdin.lock());
+    }
+
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("[qbix] could not open read names file {path}: {e}"))?;
+    readnames_from_reader(std::io::BufReader::new(file))
+}
+
+fn readnames_from_reader<R>(reader: R) -> Result<Vec<String>>
+where
+    R: BufRead,
+{
+    let mut readnames = Vec::new();
+    for line in reader.lines() {
+        let readname = line.map_err(|e| format!("[qbix] could not read read names: {e}"))?;
+        if !readname.is_empty() {
+            readnames.push(readname);
+        }
+    }
+    Ok(readnames)
 }
 
 #[cfg(test)]
@@ -433,6 +478,68 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 1,
                 order: GetOrder::Bam,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_readnames_file() {
+        let path = std::env::temp_dir().join(format!(
+            "qbix-readnames-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, "read1\n\nread2\n").unwrap();
+
+        let action = parse_args(vec![
+            "qbix".to_string(),
+            "get".to_string(),
+            "reads.bam".to_string(),
+            "-f".to_string(),
+            path.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read1".to_string(), "read2".to_string()],
+                threads: 1,
+                order: GetOrder::Query,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_readnames_from_positional_and_file() {
+        let path = std::env::temp_dir().join(format!(
+            "qbix-readnames-combined-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, "read2\n").unwrap();
+
+        let action = parse_args(vec![
+            "qbix".to_string(),
+            "get".to_string(),
+            "reads.bam".to_string(),
+            "read1".to_string(),
+            "-f".to_string(),
+            path.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read1".to_string(), "read2".to_string()],
+                threads: 1,
+                order: GetOrder::Query,
             }
         );
     }

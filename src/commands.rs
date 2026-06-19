@@ -59,6 +59,15 @@ struct Hit<'a> {
     file_offset: i64,
 }
 
+pub(crate) struct GetOptions<'a> {
+    pub(crate) input_index: Option<&'a str>,
+    pub(crate) threads: usize,
+    pub(crate) order: GetOrder,
+    pub(crate) output_format: OutputFormat,
+    pub(crate) output_path: Option<&'a str>,
+    pub(crate) color_mode: ColorMode,
+}
+
 pub(crate) fn build_index(
     input_bam: &str,
     output_index: Option<&str>,
@@ -120,28 +129,29 @@ pub(crate) fn build_index(
 
 pub(crate) fn get_records(
     input_bam: &str,
-    input_index: Option<&str>,
     readnames: &[String],
-    threads: usize,
-    order: GetOrder,
-    output_format: OutputFormat,
-    output_path: Option<&str>,
-    color_mode: ColorMode,
+    options: GetOptions<'_>,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
-    bam.set_threads(threads)?;
+    bam.set_threads(options.threads)?;
     bam.set_bgzf_cache_size(BGZF_CACHE_SIZE)?;
     let header = bam
         .read_header()
         .map_err(|_| format!("[qbix] could not read BAM header: {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
-    let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))?;
-    let output_path = output_path.unwrap_or("-");
+    let index = Index::load(Some(input_bam), options.input_index, Some(bam_metadata))?;
+    let output_path = options.output_path.unwrap_or("-");
     let rec = BamRecord::new()?;
-    let mut out = RecordWriter::open(output_path, output_format, color_mode, threads, &header)?;
+    let mut out = RecordWriter::open(
+        output_path,
+        options.output_format,
+        options.color_mode,
+        options.threads,
+        &header,
+    )?;
 
-    if order == GetOrder::Query {
+    if options.order == GetOrder::Query {
         return write_hits_in_query_order(&bam, &header, &mut out, &rec, &index, readnames);
     }
 

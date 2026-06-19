@@ -64,13 +64,15 @@ where
             color_mode,
         } => commands::get_records(
             &input_bam,
-            input_index.as_deref(),
             &readnames,
-            threads,
-            order,
-            output_format,
-            output_path.as_deref(),
-            color_mode,
+            commands::GetOptions {
+                input_index: input_index.as_deref(),
+                threads,
+                order,
+                output_format,
+                output_path: output_path.as_deref(),
+                color_mode,
+            },
         ),
         Action::Show { input_index } => commands::show_index(&input_index),
         Action::Check {

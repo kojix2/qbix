@@ -1,4 +1,6 @@
 mod api;
+#[cfg(feature = "biosyntax")]
+mod biosyntax;
 pub mod c_api;
 pub mod cli;
 mod commands;

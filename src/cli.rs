@@ -1,4 +1,4 @@
-use crate::commands::{self, CheckMode, GetOrder, OutputFormat, StatsFormat};
+use crate::commands::{self, CheckMode, ColorMode, GetOrder, OutputFormat, StatsFormat};
 use crate::error::Result;
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -24,6 +24,7 @@ const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
+const ARG_COLOR: &str = "color";
 const ARG_QUICK: &str = "quick";
 const ARG_FULL: &str = "full";
 const ARG_JSON: &str = "json";
@@ -60,6 +61,7 @@ where
             order,
             output_format,
             output_path,
+            color_mode,
         } => commands::get_records(
             &input_bam,
             input_index.as_deref(),
@@ -68,6 +70,7 @@ where
             order,
             output_format,
             output_path.as_deref(),
+            color_mode,
         ),
         Action::Show { input_index } => commands::show_index(&input_index),
         Action::Check {
@@ -141,6 +144,7 @@ enum Action {
         order: GetOrder,
         output_format: OutputFormat,
         output_path: Option<String>,
+        color_mode: ColorMode,
     },
     Show {
         input_index: String,
@@ -176,6 +180,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             order: get_order(matches),
             output_format: output_format(matches)?,
             output_path: optional_string(matches, ARG_OUTPUT),
+            color_mode: color_mode(matches)?,
         }),
         Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
             input_index: required_string(matches, ARG_INPUT_INDEX)?.to_string(),
@@ -268,6 +273,13 @@ fn get_command() -> Command {
                 .long("output")
                 .value_name("output")
                 .help("Output path, or '-' for stdout"),
+        )
+        .arg(
+            Arg::new(ARG_COLOR)
+                .long("color")
+                .value_name("auto|always|never")
+                .default_value("auto")
+                .help("Color SAM output when libbiosyntax support is enabled"),
         )
         .arg(input_bam_arg())
         .arg(readnames_arg())
@@ -494,6 +506,17 @@ fn output_format(matches: &ArgMatches) -> Result<OutputFormat> {
     }
 }
 
+fn color_mode(matches: &ArgMatches) -> Result<ColorMode> {
+    match required_string(matches, ARG_COLOR)? {
+        "auto" => Ok(ColorMode::Auto),
+        "always" => Ok(ColorMode::Always),
+        "never" => Ok(ColorMode::Never),
+        value => Err(format!(
+            "[qbix] unsupported color mode: {value}; expected auto, always, or never"
+        )),
+    }
+}
+
 fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
     matches
         .get_many::<String>(name)
@@ -587,6 +610,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                color_mode: ColorMode::Auto,
             }
         );
     }
@@ -613,6 +637,7 @@ mod tests {
                 order: GetOrder::Bam,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                color_mode: ColorMode::Auto,
             }
         );
     }
@@ -640,6 +665,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
                 output_path: Some("hits.bam".to_string()),
+                color_mode: ColorMode::Auto,
             }
         );
     }
@@ -658,6 +684,34 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
                 output_path: None,
+                color_mode: ColorMode::Auto,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_color_mode() {
+        let action = parse_args(strings([
+            "qbix",
+            "get",
+            "--color",
+            "always",
+            "reads.bam",
+            "read1",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read1".to_string()],
+                threads: 1,
+                order: GetOrder::Query,
+                output_format: OutputFormat::Sam,
+                output_path: None,
+                color_mode: ColorMode::Always,
             }
         );
     }
@@ -691,6 +745,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                color_mode: ColorMode::Auto,
             }
         );
     }
@@ -724,6 +779,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                color_mode: ColorMode::Auto,
             }
         );
     }

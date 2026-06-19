@@ -67,6 +67,21 @@ For static htslib linking:
 HTSLIB_STATIC=1 cargo build --release
 ```
 
+Optional colored SAM output uses
+[libbiosyntax](https://github.com/kojix2/libbiosyntax), which is GPL-3.0-only.
+It is disabled by default. Enable it explicitly if that license is acceptable:
+
+```sh
+cargo build --release --features biosyntax
+```
+
+With this feature enabled, the build downloads libbiosyntax v0.1.0 into Cargo's
+build directory. To use an existing checkout instead:
+
+```sh
+LIBBIOSYNTAX_DIR=/path/to/libbiosyntax cargo build --release --features biosyntax
+```
+
 You can also build and install from crates.io:
 
 ```sh
@@ -113,6 +128,15 @@ Write matching records as BAM:
 ```sh
 qbix get reads.bam -f names.txt -b -o hits.bam
 qbix get reads.bam -f names.txt -Ob -o hits.bam
+```
+
+When built with `--features biosyntax`, SAM output to a terminal is colored by
+default. Pipes and files are left plain. Use `--color always` or
+`--color never` to override:
+
+```sh
+qbix get --color always reads.bam read_a
+qbix get --color never reads.bam read_a
 ```
 
 Use more htslib threads:

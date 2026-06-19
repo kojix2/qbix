@@ -1,12 +1,17 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const LIBBIOSYNTAX_VERSION: &str = "v0.1.0";
+const LIBBIOSYNTAX_TARBALL_URL: &str =
+    "https://github.com/kojix2/libbiosyntax/archive/refs/tags/v0.1.0.tar.gz";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=HTSDIR");
     println!("cargo:rerun-if-env-changed=LIBDEFLATE_PREFIX");
     println!("cargo:rerun-if-env-changed=HTSLIB_STATIC");
     println!("cargo:rerun-if-env-changed=HTS_STATIC");
+    println!("cargo:rerun-if-env-changed=LIBBIOSYNTAX_DIR");
 
     let htsdir = env::var("HTSDIR").ok().filter(|value| !value.is_empty());
     let libdeflate_prefix = env::var("LIBDEFLATE_PREFIX")
@@ -18,6 +23,9 @@ fn main() {
     let pkg_config = pkg_config_htslib(static_htslib);
 
     build_hts_shim(htsdir.as_deref(), pkg_config.as_ref());
+    if env::var_os("CARGO_FEATURE_BIOSYNTAX").is_some() {
+        build_biosyntax();
+    }
 
     if let Some(htsdir) = &htsdir {
         println!("cargo:rustc-link-search=native={htsdir}");
@@ -30,6 +38,9 @@ fn main() {
         emit_pkg_config_libdir("zlib");
     }
     println!("cargo:rustc-link-lib=static=qbix_hts_shim");
+    if env::var_os("CARGO_FEATURE_BIOSYNTAX").is_some() {
+        println!("cargo:rustc-link-lib=static=qbix_biosyntax");
+    }
     if let Some(pkg_config) = pkg_config {
         emit_pkg_config_libs(&pkg_config.libs, static_htslib);
     } else if static_htslib {
@@ -37,6 +48,75 @@ fn main() {
     } else {
         println!("cargo:rustc-link-lib=hts");
     }
+}
+
+fn build_biosyntax() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+    let source_dir = libbiosyntax_source_dir(&out_dir);
+    let source = source_dir.join("src").join("biosyntax.c");
+    let include_dir = source_dir.join("include");
+    let object = out_dir.join("biosyntax.o");
+    let library = out_dir.join("libqbix_biosyntax.a");
+
+    let mut cc = Command::new(env::var("CC").unwrap_or_else(|_| "cc".to_string()));
+    cc.args(["-O2", "-fPIC", "-DBIOSYN_STATIC", "-c"])
+        .arg(&source)
+        .arg("-I")
+        .arg(&include_dir)
+        .arg("-o")
+        .arg(&object);
+    assert!(cc.status().expect("failed to run C compiler").success());
+
+    let ar = env::var("AR").unwrap_or_else(|_| "ar".to_string());
+    assert!(Command::new(ar)
+        .arg("crs")
+        .arg(&library)
+        .arg(&object)
+        .status()
+        .expect("failed to run ar")
+        .success());
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rerun-if-env-changed=LIBBIOSYNTAX_DIR");
+}
+
+fn libbiosyntax_source_dir(out_dir: &Path) -> PathBuf {
+    if let Some(path) = env::var("LIBBIOSYNTAX_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(path);
+    }
+
+    let source_dir = out_dir.join(format!("libbiosyntax-{LIBBIOSYNTAX_VERSION}"));
+    let source_file = source_dir.join("src").join("biosyntax.c");
+    if source_file.exists() {
+        return source_dir;
+    }
+
+    std::fs::create_dir_all(&source_dir).expect("could not create libbiosyntax source directory");
+    let tarball = out_dir.join(format!("libbiosyntax-{LIBBIOSYNTAX_VERSION}.tar.gz"));
+    assert!(
+        Command::new("curl")
+            .args(["-L", "--fail", LIBBIOSYNTAX_TARBALL_URL, "-o"])
+            .arg(&tarball)
+            .status()
+            .expect("failed to run curl")
+            .success(),
+        "could not download libbiosyntax {LIBBIOSYNTAX_VERSION}"
+    );
+    assert!(
+        Command::new("tar")
+            .args(["-xzf"])
+            .arg(&tarball)
+            .args(["--strip-components=1", "-C"])
+            .arg(&source_dir)
+            .status()
+            .expect("failed to run tar")
+            .success(),
+        "could not unpack libbiosyntax {LIBBIOSYNTAX_VERSION}"
+    );
+    source_dir
 }
 
 fn build_hts_shim(htsdir: Option<&str>, pkg_config: Option<&PkgConfigOutput>) {

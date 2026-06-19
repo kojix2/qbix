@@ -35,6 +35,15 @@ extern "C" {
     fn qbix_hts_shim_bgzf_tell(fp: *mut RawHtsFile) -> i64;
     fn qbix_hts_shim_bgzf_seek(fp: *mut RawHtsFile, offset: i64) -> i64;
     fn qbix_hts_shim_bgzf_set_cache_size(fp: *mut RawHtsFile, size: c_int) -> c_int;
+    #[cfg(feature = "biosyntax")]
+    fn qbix_hts_shim_sam_format1(
+        h: *const RawSamHdr,
+        b: *const RawBam1,
+        out: *mut *mut c_char,
+        len: *mut usize,
+    ) -> c_int;
+    #[cfg(feature = "biosyntax")]
+    fn qbix_hts_shim_free(ptr: *mut std::ffi::c_void);
 }
 
 pub(crate) struct HtsFile(*mut RawHtsFile);
@@ -189,6 +198,21 @@ impl BamRecord {
         let cstr = unsafe { CStr::from_ptr(qname) };
         cstr.to_str()
             .map_err(|_| "[qbix] BAM read name is not valid UTF-8".to_string())
+    }
+
+    #[cfg(feature = "biosyntax")]
+    pub(crate) fn format_sam(&self, header: &Header) -> Result<Vec<u8>> {
+        let mut ptr = std::ptr::null_mut();
+        let mut len = 0usize;
+        let ret = unsafe { qbix_hts_shim_sam_format1(header.0, self.0, &mut ptr, &mut len) };
+        if ret < 0 || ptr.is_null() {
+            return Err("[qbix] sam_format1 failed".to_string());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }.to_vec();
+        unsafe {
+            qbix_hts_shim_free(ptr.cast());
+        }
+        Ok(bytes)
     }
 }
 

@@ -1,6 +1,9 @@
 use crate::error::Result;
 use crate::hts::{BamRecord, Header, HtsFile};
 use crate::index::{generate_index_filename, qname_hash64, BamMetadata, Index};
+use std::io::IsTerminal;
+#[cfg(feature = "biosyntax")]
+use std::io::Write;
 
 const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
 
@@ -14,6 +17,13 @@ pub(crate) enum GetOrder {
 pub(crate) enum OutputFormat {
     Sam,
     Bam,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ColorMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +126,7 @@ pub(crate) fn get_records(
     order: GetOrder,
     output_format: OutputFormat,
     output_path: Option<&str>,
+    color_mode: ColorMode,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
@@ -127,20 +138,11 @@ pub(crate) fn get_records(
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))?;
     let output_path = output_path.unwrap_or("-");
-    let out = HtsFile::open(output_path, output_format.hts_mode()).map_err(|_| {
-        format!(
-            "[qbix] could not open {} output: {output_path}",
-            output_format.name()
-        )
-    })?;
-    if output_format == OutputFormat::Bam {
-        out.set_threads(threads)?;
-        out.write_header(&header)?;
-    }
     let rec = BamRecord::new()?;
+    let mut out = RecordWriter::open(output_path, output_format, color_mode, threads, &header)?;
 
     if order == GetOrder::Query {
-        return write_hits_in_query_order(&bam, &header, &out, &rec, &index, readnames);
+        return write_hits_in_query_order(&bam, &header, &mut out, &rec, &index, readnames);
     }
 
     let mut hits = Vec::new();
@@ -167,7 +169,7 @@ pub(crate) fn get_records(
 fn write_hits_in_query_order(
     bam: &HtsFile,
     header: &Header,
-    out: &HtsFile,
+    out: &mut RecordWriter,
     rec: &BamRecord,
     index: &Index,
     readnames: &[String],
@@ -182,6 +184,183 @@ fn write_hits_in_query_order(
         }
     }
     Ok(())
+}
+
+enum RecordWriter {
+    Hts(HtsFile),
+    #[cfg(feature = "biosyntax")]
+    Colored(ColorSamWriter),
+}
+
+impl RecordWriter {
+    fn open(
+        output_path: &str,
+        output_format: OutputFormat,
+        color_mode: ColorMode,
+        threads: usize,
+        header: &Header,
+    ) -> Result<Self> {
+        if should_color(output_format, color_mode, output_path) {
+            #[cfg(feature = "biosyntax")]
+            {
+                return Ok(Self::Colored(ColorSamWriter::open(output_path)?));
+            }
+            #[cfg(not(feature = "biosyntax"))]
+            {
+                return Err(
+                    "[qbix] colored SAM output requires building with --features biosyntax"
+                        .to_string(),
+                );
+            }
+        }
+
+        let out = HtsFile::open(output_path, output_format.hts_mode()).map_err(|_| {
+            format!(
+                "[qbix] could not open {} output: {output_path}",
+                output_format.name()
+            )
+        })?;
+        if output_format == OutputFormat::Bam {
+            out.set_threads(threads)?;
+            out.write_header(header)?;
+        }
+        Ok(Self::Hts(out))
+    }
+
+    fn write_record(&mut self, header: &Header, rec: &BamRecord) -> Result<()> {
+        match self {
+            Self::Hts(out) => out.write_record(header, rec),
+            #[cfg(feature = "biosyntax")]
+            Self::Colored(out) => out.write_record(header, rec),
+        }
+    }
+}
+
+#[cfg(feature = "biosyntax")]
+struct ColorSamWriter {
+    writer: std::io::BufWriter<Box<dyn std::io::Write>>,
+    line_no: u64,
+}
+
+#[cfg(feature = "biosyntax")]
+impl ColorSamWriter {
+    fn open(output_path: &str) -> Result<Self> {
+        let writer: Box<dyn std::io::Write> = if output_path == "-" {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(
+                std::fs::File::create(output_path)
+                    .map_err(|e| format!("[qbix] could not open SAM output: {output_path}: {e}"))?,
+            )
+        };
+        Ok(Self {
+            writer: std::io::BufWriter::new(writer),
+            line_no: 0,
+        })
+    }
+
+    fn write_record(&mut self, header: &Header, rec: &BamRecord) -> Result<()> {
+        let line = rec.format_sam(header)?;
+        let rendered = crate::biosyntax::render_sam_ansi(&line, self.line_no)?;
+        self.writer
+            .write_all(&rendered)
+            .map_err(|e| format!("[qbix] could not write colored SAM output: {e}"))?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|e| format!("[qbix] could not write colored SAM output: {e}"))?;
+        self.line_no += 1;
+        Ok(())
+    }
+}
+
+fn should_color(output_format: OutputFormat, color_mode: ColorMode, output_path: &str) -> bool {
+    should_color_with_terminal(
+        output_format,
+        color_mode,
+        output_path,
+        std::io::stdout().is_terminal(),
+    )
+}
+
+fn should_color_with_terminal(
+    output_format: OutputFormat,
+    color_mode: ColorMode,
+    output_path: &str,
+    stdout_is_terminal: bool,
+) -> bool {
+    if output_format != OutputFormat::Sam {
+        return false;
+    }
+    match color_mode {
+        ColorMode::Never => false,
+        ColorMode::Always => true,
+        ColorMode::Auto => cfg!(feature = "biosyntax") && output_path == "-" && stdout_is_terminal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_color_with_terminal, ColorMode, OutputFormat};
+
+    #[test]
+    #[cfg(not(feature = "biosyntax"))]
+    fn auto_color_falls_back_to_plain_without_biosyntax_even_on_terminal() {
+        assert!(!should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Auto,
+            "-",
+            true,
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "biosyntax")]
+    fn auto_color_uses_biosyntax_for_terminal_sam_stdout() {
+        assert!(should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Auto,
+            "-",
+            true,
+        ));
+    }
+
+    #[test]
+    fn auto_color_leaves_pipes_files_and_bam_plain() {
+        assert!(!should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Auto,
+            "-",
+            false,
+        ));
+        assert!(!should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Auto,
+            "hits.sam",
+            true,
+        ));
+        assert!(!should_color_with_terminal(
+            OutputFormat::Bam,
+            ColorMode::Auto,
+            "-",
+            true,
+        ));
+    }
+
+    #[test]
+    fn explicit_color_modes_do_not_depend_on_terminal_detection() {
+        assert!(should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Always,
+            "-",
+            false,
+        ));
+        assert!(!should_color_with_terminal(
+            OutputFormat::Sam,
+            ColorMode::Never,
+            "-",
+            true,
+        ));
+    }
 }
 
 pub(crate) fn show_index(input_index: &str) -> Result<()> {

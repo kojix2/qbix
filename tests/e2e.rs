@@ -200,6 +200,46 @@ fn get_can_read_names_from_stdin() {
 }
 
 #[test]
+#[cfg(not(feature = "biosyntax"))]
+fn get_rejects_forced_color_without_biosyntax_feature() {
+    let temp = TempDir::new("color-disabled");
+    let bam = temp.path().join("reads.bam");
+    let bam = bam.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args(["get", "--color", "always", bam, "read_a"])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert!(String::from_utf8_lossy(&get.stderr).contains("--features biosyntax"));
+}
+
+#[test]
+#[cfg(feature = "biosyntax")]
+fn get_can_force_colored_sam_output_with_biosyntax_feature() {
+    let temp = TempDir::new("color-enabled");
+    let bam = temp.path().join("reads.bam");
+    let bam = bam.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args(["get", "--color", "always", bam, "read_a"])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert!(String::from_utf8_lossy(&get.stdout).contains("\x1b["));
+}
+
+#[test]
 fn get_can_write_bam_output_to_path() {
     let temp = TempDir::new("bam-output");
     let bam = temp.path().join("reads.bam");

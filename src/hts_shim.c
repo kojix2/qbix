@@ -1,7 +1,9 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <htslib/bgzf.h>
 #include <htslib/hts.h>
+#include <htslib/kstring.h>
 #include <htslib/sam.h>
 #include <htslib/tbx.h>
 
@@ -32,10 +34,30 @@ const char *qbix_hts_shim_bam_qname(bam1_t *b)
 
 const char *qbix_hts_shim_sam_hdr_text(const sam_hdr_t *h)
 {
-    return sam_hdr_str(h);
+    return sam_hdr_str((sam_hdr_t *)h);
 }
 
 size_t qbix_hts_shim_sam_hdr_text_len(const sam_hdr_t *h)
 {
-    return sam_hdr_length(h);
+    return sam_hdr_length((sam_hdr_t *)h);
+}
+
+int qbix_hts_shim_sam_format1(const sam_hdr_t *h, const bam1_t *b, char **out, size_t *len)
+{
+    kstring_t str = {0, 0, 0};
+    if (out == 0 || len == 0) return -1;
+    *out = 0;
+    *len = 0;
+    if (sam_format1(h, b, &str) < 0) {
+        free(str.s);
+        return -1;
+    }
+    *out = str.s;
+    *len = str.l;
+    return 0;
+}
+
+void qbix_hts_shim_free(void *ptr)
+{
+    free(ptr);
 }

@@ -10,6 +10,28 @@ pub(crate) enum GetOrder {
     Bam,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputFormat {
+    Sam,
+    Bam,
+}
+
+impl OutputFormat {
+    fn hts_mode(self) -> &'static str {
+        match self {
+            Self::Sam => "w",
+            Self::Bam => "wb",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Sam => "SAM",
+            Self::Bam => "BAM",
+        }
+    }
+}
+
 struct Hit<'a> {
     readname: &'a str,
     file_offset: i64,
@@ -80,6 +102,8 @@ pub(crate) fn get_records(
     readnames: &[String],
     threads: usize,
     order: GetOrder,
+    output_format: OutputFormat,
+    output_path: Option<&str>,
 ) -> Result<()> {
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
@@ -90,8 +114,17 @@ pub(crate) fn get_records(
         .map_err(|_| format!("[qbix] could not read BAM header: {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let index = Index::load(Some(input_bam), input_index, Some(bam_metadata))?;
-    let out = HtsFile::open("-", "w")
-        .map_err(|_| "[qbix] could not open stdout for SAM output".to_string())?;
+    let output_path = output_path.unwrap_or("-");
+    let out = HtsFile::open(output_path, output_format.hts_mode()).map_err(|_| {
+        format!(
+            "[qbix] could not open {} output: {output_path}",
+            output_format.name()
+        )
+    })?;
+    if output_format == OutputFormat::Bam {
+        out.set_threads(threads)?;
+        out.write_header(&header)?;
+    }
     let rec = BamRecord::new()?;
 
     let mut hits = Vec::new();

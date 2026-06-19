@@ -147,6 +147,44 @@ fn get_can_read_names_from_stdin() {
 }
 
 #[test]
+fn get_can_write_bam_output_to_path() {
+    let temp = TempDir::new("bam-output");
+    let bam = temp.path().join("reads.bam");
+    let names = temp.path().join("names.txt");
+    let hits = temp.path().join("hits.bam");
+    let bam = bam.to_str().unwrap();
+    let names = names.to_str().unwrap();
+    let hits = hits.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_b", "read_c"]);
+    fs::write(names, "read_c\nread_a\n").unwrap();
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args(["get", bam, "-f", names, "-Ob", "-o", hits])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert!(get.stdout.is_empty());
+
+    assert_success(Command::new(qbix()).args(["index", hits]));
+    let verify = Command::new(qbix())
+        .args(["get", hits, "read_a", "read_c"])
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert_eq!(first_fields(&verify.stdout), ["read_a", "read_c"]);
+}
+
+#[test]
 fn supports_explicit_index_path() {
     let temp = TempDir::new("explicit-index");
     let bam = temp.path().join("reads.bam");

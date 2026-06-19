@@ -1,4 +1,4 @@
-use crate::commands::{self, GetOrder};
+use crate::commands::{self, GetOrder, OutputFormat};
 use crate::error::Result;
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -19,6 +19,9 @@ const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
 const ARG_READNAMES_FILE: &str = "readnames_file";
+const ARG_OUTPUT_BAM: &str = "output_bam";
+const ARG_OUTPUT_FORMAT: &str = "output_format";
+const ARG_OUTPUT: &str = "output";
 const SOURCE_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const TOP_LEVEL_HELP_TEMPLATE: &str = "\
 Program: qbix
@@ -50,12 +53,16 @@ where
             readnames,
             threads,
             order,
+            output_format,
+            output_path,
         } => commands::get_records(
             &input_bam,
             input_index.as_deref(),
             &readnames,
             threads,
             order,
+            output_format,
+            output_path.as_deref(),
         ),
         Action::Show { input_index } => commands::show_index(&input_index),
         Action::Check {
@@ -121,6 +128,8 @@ enum Action {
         readnames: Vec<String>,
         threads: usize,
         order: GetOrder,
+        output_format: OutputFormat,
+        output_path: Option<String>,
     },
     Show {
         input_index: String,
@@ -148,6 +157,8 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             readnames: get_readnames(matches)?,
             threads: threads(matches)?,
             order: get_order(matches),
+            output_format: output_format(matches)?,
+            output_path: optional_string(matches, ARG_OUTPUT),
         }),
         Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
             input_index: required_string(matches, ARG_INPUT_INDEX)?.to_string(),
@@ -211,6 +222,28 @@ fn get_command() -> Command {
                 .long("file")
                 .value_name("readnames.txt")
                 .help("Read read names from a file, or '-' for stdin"),
+        )
+        .arg(
+            Arg::new(ARG_OUTPUT_BAM)
+                .short('b')
+                .long("bam")
+                .action(ArgAction::SetTrue)
+                .help("Output BAM"),
+        )
+        .arg(
+            Arg::new(ARG_OUTPUT_FORMAT)
+                .short('O')
+                .long("output-fmt")
+                .value_name("SAM|BAM")
+                .default_value("SAM")
+                .help("Output format"),
+        )
+        .arg(
+            Arg::new(ARG_OUTPUT)
+                .short('o')
+                .long("output")
+                .value_name("output")
+                .help("Output path, or '-' for stdout"),
         )
         .arg(input_bam_arg())
         .arg(readnames_arg())
@@ -363,6 +396,23 @@ fn get_order(matches: &ArgMatches) -> GetOrder {
     }
 }
 
+fn output_format(matches: &ArgMatches) -> Result<OutputFormat> {
+    if matches.get_flag(ARG_OUTPUT_BAM) {
+        return Ok(OutputFormat::Bam);
+    }
+
+    match required_string(matches, ARG_OUTPUT_FORMAT)?
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "S" | "SAM" => Ok(OutputFormat::Sam),
+        "B" | "BAM" => Ok(OutputFormat::Bam),
+        format => Err(format!(
+            "[qbix] unsupported output format: {format}; expected SAM or BAM"
+        )),
+    }
+}
+
 fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
     matches
         .get_many::<String>(name)
@@ -454,6 +504,8 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 4,
                 order: GetOrder::Query,
+                output_format: OutputFormat::Sam,
+                output_path: None,
             }
         );
     }
@@ -478,6 +530,53 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 1,
                 order: GetOrder::Bam,
+                output_format: OutputFormat::Sam,
+                output_path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_output_options() {
+        let action = parse_args(strings([
+            "qbix",
+            "get",
+            "reads.bam",
+            "-Ob",
+            "-o",
+            "hits.bam",
+            "read1",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read1".to_string()],
+                threads: 1,
+                order: GetOrder::Query,
+                output_format: OutputFormat::Bam,
+                output_path: Some("hits.bam".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_bam_shortcut() {
+        let action = parse_args(strings(["qbix", "get", "reads.bam", "-b", "read1"])).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read1".to_string()],
+                threads: 1,
+                order: GetOrder::Query,
+                output_format: OutputFormat::Bam,
+                output_path: None,
             }
         );
     }
@@ -509,6 +608,8 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 1,
                 order: GetOrder::Query,
+                output_format: OutputFormat::Sam,
+                output_path: None,
             }
         );
     }
@@ -540,6 +641,8 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 1,
                 order: GetOrder::Query,
+                output_format: OutputFormat::Sam,
+                output_path: None,
             }
         );
     }

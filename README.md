@@ -108,6 +108,13 @@ Use `-f -` to read names from stdin:
 cat names.txt | qbix get reads.bam -f -
 ```
 
+Write matching records as BAM:
+
+```sh
+qbix get reads.bam -f names.txt -b -o hits.bam
+qbix get reads.bam -f names.txt -Ob -o hits.bam
+```
+
 Use more htslib threads:
 
 ```sh

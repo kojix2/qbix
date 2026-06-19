@@ -22,6 +22,7 @@ extern "C" {
     fn hts_open(path: *const c_char, mode: *const c_char) -> *mut RawHtsFile;
     fn hts_close(fp: *mut RawHtsFile) -> c_int;
     fn sam_hdr_read(fp: *mut RawHtsFile) -> *mut RawSamHdr;
+    fn sam_hdr_write(fp: *mut RawHtsFile, h: *const RawSamHdr) -> c_int;
     fn sam_hdr_destroy(h: *mut RawSamHdr);
     fn bam_init1() -> *mut RawBam1;
     fn bam_destroy1(b: *mut RawBam1);
@@ -89,6 +90,13 @@ impl HtsFile {
     pub(crate) fn write_record(&self, header: &Header, record: &BamRecord) -> Result<()> {
         if unsafe { sam_write1(self.0, header.0, record.0) } < 0 {
             return Err("[qbix] sam_write1 failed".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_header(&self, header: &Header) -> Result<()> {
+        if unsafe { sam_hdr_write(self.0, header.0) } < 0 {
+            return Err("[qbix] sam_hdr_write failed".to_string());
         }
         Ok(())
     }

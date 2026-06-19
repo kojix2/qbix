@@ -14,9 +14,24 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
     write_unmapped_bam(bam, &["read_b", "read_a", "read_a", "read_c"]);
 
     assert_success(Command::new(qbix()).args(["index", bam]));
-    assert_success(Command::new(qbix()).args(["check", bam]));
+    let quick_check = Command::new(qbix()).args(["check", bam]).output().unwrap();
+    assert!(
+        quick_check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&quick_check.stderr)
+    );
+    assert!(String::from_utf8_lossy(&quick_check.stderr).contains("ok (quick, 4 records)"));
     assert_success(Command::new(qbix()).args(["check", "--quick", bam]));
-    assert_success(Command::new(qbix()).args(["check", "--full", bam]));
+    let full_check = Command::new(qbix())
+        .args(["check", "--full", bam])
+        .output()
+        .unwrap();
+    assert!(
+        full_check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&full_check.stderr)
+    );
+    assert!(String::from_utf8_lossy(&full_check.stderr).contains("ok (full, 4 records)"));
 
     let get = Command::new(qbix())
         .args(["get", bam, "read_a", "read_c"])
@@ -53,6 +68,42 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
         assert!(fields[0].parse::<u64>().is_ok());
         assert!(fields[1].parse::<i64>().is_ok());
     }
+
+    let stats = Command::new(qbix()).args(["stats", bam]).output().unwrap();
+    assert!(
+        stats.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stats.stderr)
+    );
+    let stats_stdout = String::from_utf8(stats.stdout).unwrap();
+    assert!(stats_stdout.contains("Records:\t4"));
+    assert!(stats_stdout.contains("Distinct read-name hashes:\t3"));
+    assert!(stats_stdout.contains("  1 (singletons):\t2 (66.7%)"));
+    assert!(stats_stdout.contains("  2 (pairs):\t1 (33.3%)"));
+    assert!(stats_stdout.contains("  3+ (multi/suppl.):\t0 (0.0%)"));
+    assert!(stats_stdout.contains("  max:\t2"));
+    assert!(stats_stdout.contains("  mean:\t1.33"));
+    assert!(stats_stdout.contains("Index metadata:"));
+    assert!(stats_stdout.contains("  BAM:\t"));
+    assert!(stats_stdout.contains("  Index:\t"));
+
+    let json_stats = Command::new(qbix())
+        .args(["stat", "--json", bam])
+        .output()
+        .unwrap();
+    assert!(
+        json_stats.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_stats.stderr)
+    );
+    let json_stdout = String::from_utf8(json_stats.stdout).unwrap();
+    assert!(json_stdout.contains("\"format\": \"QBI1\""));
+    assert!(json_stdout.contains("\"records\": 4"));
+    assert!(json_stdout.contains("\"distinct_qname_hashes\": 3"));
+    assert!(json_stdout.contains("\"singletons\": 2"));
+    assert!(json_stdout.contains("\"pairs\": 1"));
+    assert!(json_stdout.contains("\"multi_or_supplementary\": 0"));
+    assert!(json_stdout.contains("\"max\": 2"));
 }
 
 #[test]

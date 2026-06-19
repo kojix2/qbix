@@ -160,10 +160,26 @@ qbix check reads.bam
 qbix check --quick reads.bam
 ```
 
-Use `--full` to also seek to every indexed record and verify its read-name hash:
+`check` defaults to `--quick`. Use `--full` to also seek to every indexed record
+and verify its read-name hash:
 
 ```sh
 qbix check --full reads.bam
+```
+
+Print records-per-read-name statistics from the index. `stat` is accepted as an
+alias for `stats`:
+
+```sh
+qbix stats reads.bam
+qbix stat reads.bam
+qbix stats -i reads.qbi reads.bam
+```
+
+Use JSON output for scripts:
+
+```sh
+qbix stats --json reads.bam
 ```
 
 Show raw index rows:

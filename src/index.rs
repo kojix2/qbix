@@ -46,6 +46,18 @@ impl BamMetadata {
             header_hash,
         })
     }
+
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) fn mtime(&self) -> u64 {
+        self.mtime
+    }
+
+    pub(crate) fn header_hash(&self) -> u64 {
+        self.header_hash
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +77,7 @@ struct MappedIndex {
     mmap: Mmap,
     record_start: usize,
     record_count: usize,
+    bam_metadata: BamMetadata,
 }
 
 #[derive(Clone, Copy)]
@@ -240,6 +253,7 @@ impl Index {
                 mmap,
                 record_start,
                 record_count,
+                bam_metadata,
             }),
         })
     }
@@ -248,6 +262,13 @@ impl Index {
         match &self.storage {
             IndexStorage::Owned { records, .. } => records.len(),
             IndexStorage::Mapped(mapped) => mapped.record_count,
+        }
+    }
+
+    pub(crate) fn bam_metadata(&self) -> Option<BamMetadata> {
+        match &self.storage {
+            IndexStorage::Owned { .. } => None,
+            IndexStorage::Mapped(mapped) => Some(mapped.bam_metadata),
         }
     }
 

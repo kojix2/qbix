@@ -1,4 +1,4 @@
-use crate::commands::{self, CheckMode, GetOrder, OutputFormat};
+use crate::commands::{self, CheckMode, GetOrder, OutputFormat, StatsFormat};
 use crate::error::Result;
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -10,6 +10,8 @@ const COMMAND_INDEX: &str = "index";
 const COMMAND_GET: &str = "get";
 const COMMAND_SHOW: &str = "show";
 const COMMAND_CHECK: &str = "check";
+const COMMAND_STATS: &str = "stats";
+const COMMAND_STAT: &str = "stat";
 const ARG_INDEX: &str = "index";
 const ARG_INPUT_BAM: &str = "input_bam";
 const ARG_INPUT_INDEX: &str = "input_index";
@@ -24,6 +26,7 @@ const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
 const ARG_QUICK: &str = "quick";
 const ARG_FULL: &str = "full";
+const ARG_JSON: &str = "json";
 const SOURCE_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const TOP_LEVEL_HELP_TEMPLATE: &str = "\
 Program: qbix
@@ -74,6 +77,11 @@ where
             verbose,
             mode,
         } => commands::check_index(&input_bam, input_index.as_deref(), threads, verbose, mode),
+        Action::Stats {
+            input_bam,
+            input_index,
+            format,
+        } => commands::stats_index(&input_bam, input_index.as_deref(), format),
         Action::HelpDisplayed => Ok(()),
     }
 }
@@ -144,6 +152,11 @@ enum Action {
         verbose: bool,
         mode: CheckMode,
     },
+    Stats {
+        input_bam: String,
+        input_index: Option<String>,
+        format: StatsFormat,
+    },
     HelpDisplayed,
 }
 
@@ -174,6 +187,11 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             verbose: matches.get_flag(ARG_VERBOSE),
             mode: check_mode(matches),
         }),
+        Some((COMMAND_STATS | COMMAND_STAT, matches)) => Ok(Action::Stats {
+            input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
+            input_index: optional_string(matches, ARG_INDEX),
+            format: stats_format(matches),
+        }),
         _ => Err("[qbix] usage qbix <COMMAND> [...]".to_string()),
     }
 }
@@ -191,6 +209,7 @@ fn app() -> Command {
         .subcommand(get_command())
         .subcommand(show_command())
         .subcommand(check_command())
+        .subcommand(stats_command())
 }
 
 fn index_command() -> Command {
@@ -283,6 +302,20 @@ fn check_command() -> Command {
         .arg(input_bam_arg())
 }
 
+fn stats_command() -> Command {
+    Command::new(COMMAND_STATS)
+        .alias(COMMAND_STAT)
+        .about("Print QBI index statistics")
+        .arg(index_arg())
+        .arg(
+            Arg::new(ARG_JSON)
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .help("Print JSON"),
+        )
+        .arg(input_bam_arg())
+}
+
 fn print_subcommand_help(command_name: &str) -> Result<()> {
     let Some(mut command) = command_for_help(command_name) else {
         return Ok(());
@@ -334,6 +367,7 @@ fn subcommand(name: &str) -> Option<Command> {
         COMMAND_GET => Some(get_command()),
         COMMAND_SHOW => Some(show_command()),
         COMMAND_CHECK => Some(check_command()),
+        COMMAND_STATS | COMMAND_STAT => Some(stats_command()),
         _ => None,
     }
 }
@@ -420,6 +454,14 @@ fn check_mode(matches: &ArgMatches) -> CheckMode {
         CheckMode::Full
     } else {
         CheckMode::Quick
+    }
+}
+
+fn stats_format(matches: &ArgMatches) -> StatsFormat {
+    if matches.get_flag(ARG_JSON) {
+        StatsFormat::Json
+    } else {
+        StatsFormat::Text
     }
 }
 
@@ -723,6 +765,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_stats_options() {
+        let action = parse_args(strings([
+            "qbix",
+            "stats",
+            "-i",
+            "reads.qbi",
+            "--json",
+            "reads.bam",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            action,
+            Action::Stats {
+                input_bam: "reads.bam".to_string(),
+                input_index: Some("reads.qbi".to_string()),
+                format: StatsFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_stat_alias() {
+        let action = parse_args(strings(["qbix", "stat", "reads.bam"])).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Stats {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                format: StatsFormat::Text,
+            }
+        );
+    }
+
+    #[test]
     fn rejects_get_without_readname() {
         let err = parse_args(strings(["qbix", "get", "reads.bam"])).unwrap_err();
         assert!(err.contains("required"));
@@ -743,6 +821,7 @@ mod tests {
         assert!(help.contains("Retrieve BAM records by QNAME"));
         assert!(help.contains("Print raw QBI index rows"));
         assert!(help.contains("Check a QBI index against its BAM file"));
+        assert!(help.contains("Print QBI index statistics"));
     }
 
     fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {

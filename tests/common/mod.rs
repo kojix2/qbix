@@ -19,6 +19,9 @@ struct RawBam1 {
 }
 
 #[link(name = "hts")]
+// The test helper links htslib directly, so static htslib dependencies are not
+// inherited through the qbix crate's build script link directives.
+#[link(name = "deflate")]
 #[link(name = "z")]
 extern "C" {
     fn hts_open(path: *const c_char, mode: *const c_char) -> *mut RawHtsFile;

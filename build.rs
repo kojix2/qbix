@@ -46,12 +46,20 @@ fn main() {
     if env::var_os("CARGO_FEATURE_BIOSYNTAX").is_some() {
         println!("cargo:rustc-link-lib=static=qbix_biosyntax");
     }
-    if let Some(pkg_config) = pkg_config {
-        emit_pkg_config_libs(&pkg_config.libs, static_htslib);
+    let emitted_libs = if let Some(pkg_config) = pkg_config {
+        emit_pkg_config_libs(&pkg_config.libs, static_htslib)
     } else if static_htslib {
         println!("cargo:rustc-link-lib=static=hts");
+        vec!["hts".to_string()]
     } else {
         println!("cargo:rustc-link-lib=hts");
+        vec!["hts".to_string()]
+    };
+    if libdeflate_prefix.is_some()
+        && !static_htslib
+        && !emitted_libs.iter().any(|lib| lib == "deflate")
+    {
+        println!("cargo:rustc-link-lib=deflate");
     }
 }
 
@@ -183,14 +191,14 @@ fn pkg_config_htslib(static_htslib: bool) -> Option<PkgConfigOutput> {
     Some(PkgConfigOutput { cflags, libs })
 }
 
-fn emit_pkg_config_libs(libs: &str, static_htslib: bool) {
+fn emit_pkg_config_libs(libs: &str, static_htslib: bool) -> Vec<String> {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let mut emitted_libs = Vec::new();
     for flag in split_flags(libs) {
         if let Some(path) = flag.strip_prefix("-L") {
             println!("cargo:rustc-link-search=native={path}");
         } else if let Some(lib) = flag.strip_prefix("-l") {
-            emitted_libs.push(lib);
+            emitted_libs.push(lib.to_string());
             if static_htslib && should_link_static_lib(lib, &target_os) {
                 println!("cargo:rustc-link-lib=static={lib}");
             } else {
@@ -207,6 +215,7 @@ fn emit_pkg_config_libs(libs: &str, static_htslib: bool) {
     if static_htslib {
         emit_static_htslib_fallback_libs(&emitted_libs, &target_os);
     }
+    emitted_libs
 }
 
 fn should_link_static_lib(lib: &str, target_os: &str) -> bool {
@@ -223,11 +232,11 @@ fn has_static_htslib(htsdir: &str) -> bool {
     PathBuf::from(htsdir).join("lib").join("libhts.a").exists()
 }
 
-fn emit_static_htslib_fallback_libs(emitted_libs: &[&str], target_os: &str) {
-    if !emitted_libs.contains(&"deflate") {
+fn emit_static_htslib_fallback_libs(emitted_libs: &[String], target_os: &str) {
+    if !emitted_libs.iter().any(|lib| lib == "deflate") {
         println!("cargo:rustc-link-lib=static=deflate");
     }
-    if !emitted_libs.contains(&"z") {
+    if !emitted_libs.iter().any(|lib| lib == "z") {
         if target_os == "linux" {
             println!("cargo:rustc-link-lib=static=z");
         } else {

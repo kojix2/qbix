@@ -40,6 +40,7 @@ uses the same record ordering as the bucketed builder.
 ```text
 --memory      512M
 --bucket-bits 8
+--sort-threads 1
 --temp-dir    unset
 ```
 
@@ -56,6 +57,16 @@ one bucket Vec (<= --memory)
 
 Staging buffers are allocated lazily per bucket.  With `--bucket-bits 12`, the
 maximum staging-buffer footprint is `4096 * 64 KiB = 256 MiB`.
+
+`--sort-threads` controls how many buckets may be loaded and sorted in
+parallel during the final phase.  Because each worker may load one full bucket,
+peak record memory can rise to approximately:
+
+```text
+--sort-threads * --memory
++ allocated staging buffers
++ htslib buffers
+```
 
 ## Algorithm
 
@@ -77,9 +88,8 @@ finish
   create final tmp next to output index
   write QBI1 header with total record count
 
-  for buckets in ascending prefix order:
-    read one bucket into Vec<Record>
-    sort_unstable_by(qhash, file_offset)
+  for chunks of up to sort_threads buckets in ascending prefix order:
+    read and sort buckets in the chunk in parallel
     append sorted records to final tmp
     best-effort remove consumed bucket temp file
 
@@ -109,7 +119,8 @@ bucket = qhash >> (64 - bucket_bits)
 
 Processing buckets in ascending bucket order and sorting each bucket by
 `(qhash, file_offset)` produces exactly the same global order as sorting all
-records together by `(qhash, file_offset)`.
+records together by `(qhash, file_offset)`.  When `--sort-threads` is greater
+than 1, buckets are still written to the final index in prefix order.
 
 This preserves the invariant required by:
 
@@ -200,6 +211,9 @@ qbix index --memory 512M --bucket-bits 8 --temp-dir DIR reads.bam
 
 `--memory` accepts integer values with optional `K`, `M`, or `G` suffixes.
 
+`--sort-threads` is independent of htslib `--threads`.  It only parallelizes
+bucket sorting during final index assembly.
+
 ## Rust API
 
 `BuildOptions` includes:
@@ -211,6 +225,7 @@ pub struct BuildOptions {
     pub verbose: bool,
     pub memory_limit: Option<usize>,
     pub bucket_bits: Option<u8>,
+    pub sort_threads: Option<usize>,
     pub temp_dir: Option<PathBuf>,
 }
 ```
@@ -219,6 +234,7 @@ pub struct BuildOptions {
 
 - `memory_limit`: 512 MiB
 - `bucket_bits`: 8
+- `sort_threads`: 1
 - `temp_dir`: output index directory
 
 `BuildOptions`, `LookupOptions`, and `CheckOptions` are `#[non_exhaustive]`.
@@ -228,6 +244,7 @@ External users should start from `Default` and then assign fields:
 let mut options = qbix::BuildOptions::default();
 options.bucket_bits = Some(12);
 options.memory_limit = Some(1024 * 1024 * 1024);
+options.sort_threads = Some(4);
 ```
 
 ## C API
@@ -246,8 +263,8 @@ explicit build options without breaking the existing function.
 The test suite covers:
 
 - byte-for-byte equivalence with the in-memory reference path
+- byte-for-byte equivalence with parallel bucket sorting
 - equivalence at `bucket_bits` bounds (`1` and `12`)
 - oversized bucket fail-fast behavior
 - cleanup after an oversized error with flushed bucket temp files
 - existing CLI, Rust API, C API, and end-to-end workflows
-

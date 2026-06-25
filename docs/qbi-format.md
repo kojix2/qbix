@@ -71,13 +71,14 @@ candidates matching a read-name hash.
 
 The on-disk format is independent of the builder implementation. Current
 `qbix index` builds large indexes by partitioning records into temporary bucket
-files using the high bits of `qhash`, then sorting one bucket at a time and
-appending the sorted records to the final `QBI1` file.
+files using the high bits of `qhash`, then sorting buckets and appending the
+sorted records to the final `QBI1` file in bucket-prefix order.
 
 Default build settings are:
 
 - `--memory 512M`: maximum size of one bucket loaded during final sorting
 - `--bucket-bits 8`: 256 temporary buckets
+- `--sort-threads 1`: number of bucket sort worker threads
 - `--temp-dir`: unset, so bucket temporary files are placed next to the output
   index
 

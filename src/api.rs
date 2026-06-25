@@ -5,6 +5,7 @@ use crate::error::{Error, PublicResult as Result};
 use crate::hts::{BamRecord, Header, HtsFile};
 use crate::index::{
     generate_index_filename, BamMetadata, Index, DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT,
+    DEFAULT_SORT_THREADS,
 };
 
 const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
@@ -18,6 +19,7 @@ pub struct BuildOptions {
     pub verbose: bool,
     pub memory_limit: Option<usize>,
     pub bucket_bits: Option<u8>,
+    pub sort_threads: Option<usize>,
     pub temp_dir: Option<PathBuf>,
 }
 
@@ -29,6 +31,7 @@ impl Default for BuildOptions {
             verbose: false,
             memory_limit: None,
             bucket_bits: None,
+            sort_threads: None,
             temp_dir: None,
         }
     }
@@ -121,12 +124,15 @@ where
     let temp_dir = optional_path_to_str(options.temp_dir.as_deref(), "temporary directory")?;
     commands::build_index(
         input_bam,
-        index_path.as_deref(),
-        options.verbose,
-        options.threads,
-        options.memory_limit.unwrap_or(DEFAULT_INDEX_MEMORY_LIMIT),
-        options.bucket_bits.unwrap_or(DEFAULT_BUCKET_BITS),
-        temp_dir.as_deref(),
+        commands::BuildIndexOptions {
+            output_index: index_path.as_deref(),
+            verbose: options.verbose,
+            threads: options.threads,
+            memory_limit: options.memory_limit.unwrap_or(DEFAULT_INDEX_MEMORY_LIMIT),
+            bucket_bits: options.bucket_bits.unwrap_or(DEFAULT_BUCKET_BITS),
+            sort_threads: options.sort_threads.unwrap_or(DEFAULT_SORT_THREADS),
+            temp_dir: temp_dir.as_deref(),
+        },
     )
     .map_err(Error::from)?;
     let written =

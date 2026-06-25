@@ -25,6 +25,7 @@ const RECORD_QHASH_OFFSET: usize = 0;
 const RECORD_FILE_OFFSET: usize = 8;
 pub(crate) const DEFAULT_INDEX_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 pub(crate) const DEFAULT_BUCKET_BITS: u8 = 8;
+pub(crate) const DEFAULT_SORT_THREADS: usize = 1;
 pub(crate) const MIN_BUCKET_BITS: u8 = 1;
 pub(crate) const MAX_BUCKET_BITS: u8 = 12;
 
@@ -319,6 +320,7 @@ pub(crate) struct BucketIndexBuilder {
     buckets: Vec<BucketState>,
     bucket_bits: u8,
     memory_limit: usize,
+    sort_threads: usize,
     total_records: usize,
     output_path: PathBuf,
     final_tmp_path: PathBuf,
@@ -330,10 +332,14 @@ impl BucketIndexBuilder {
         output_index: &str,
         memory_limit: usize,
         bucket_bits: u8,
+        sort_threads: usize,
         temp_dir: Option<&str>,
     ) -> Result<Self> {
         if memory_limit < usize::from(RECORD_SIZE) {
             return Err("[qbix] memory limit must be at least 16 bytes".to_string());
+        }
+        if sort_threads == 0 {
+            return Err("[qbix] sort threads must be a positive integer".to_string());
         }
         validate_bucket_bits(bucket_bits)?;
 
@@ -370,6 +376,7 @@ impl BucketIndexBuilder {
             buckets,
             bucket_bits,
             memory_limit,
+            sort_threads,
             total_records: 0,
             output_path,
             final_tmp_path,
@@ -433,14 +440,32 @@ impl BucketIndexBuilder {
         let mut out = BufWriter::with_capacity(INDEX_IO_BUFFER_SIZE, file);
         write_header(&mut out, self.total_records, bam_metadata)?;
 
-        for bucket in &self.buckets {
-            let mut records = bucket.read_records(self.memory_limit)?;
-            records.sort_unstable_by(Record::cmp_key);
-            for record in records {
-                write_record(&mut out, record)?;
-            }
-            if bucket.bytes > 0 {
-                let _ = std::fs::remove_file(&bucket.path);
+        let sort_threads = self.sort_threads.min(self.buckets.len()).max(1);
+        let memory_limit = self.memory_limit;
+        for bucket_chunk in self.buckets.chunks(sort_threads) {
+            let sorted_buckets = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(bucket_chunk.len());
+                for bucket in bucket_chunk {
+                    handles.push(scope.spawn(move || bucket.read_sorted_records(memory_limit)));
+                }
+
+                let mut sorted_buckets = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    let records = handle
+                        .join()
+                        .map_err(|_| "[qbix] bucket sort worker panicked".to_string())??;
+                    sorted_buckets.push(records);
+                }
+                Ok::<_, String>(sorted_buckets)
+            })?;
+
+            for (bucket, records) in bucket_chunk.iter().zip(sorted_buckets) {
+                for record in records {
+                    write_record(&mut out, record)?;
+                }
+                if bucket.bytes > 0 {
+                    let _ = std::fs::remove_file(&bucket.path);
+                }
             }
         }
 
@@ -498,6 +523,12 @@ impl BucketState {
         file.write_all(buffer)?;
         buffer.clear();
         Ok(())
+    }
+
+    fn read_sorted_records(&self, memory_limit: usize) -> Result<Vec<Record>> {
+        let mut records = self.read_records(memory_limit)?;
+        records.sort_unstable_by(Record::cmp_key);
+        Ok(records)
     }
 
     fn read_records(&self, memory_limit: usize) -> Result<Vec<Record>> {
@@ -805,7 +836,20 @@ mod tests {
             ("read_c", 40),
             ("read_a", 20),
         ];
-        assert_bucket_builder_matches_in_memory_save(&records, 2);
+        assert_bucket_builder_matches_in_memory_save(&records, 2, DEFAULT_SORT_THREADS);
+    }
+
+    #[test]
+    fn bucket_builder_parallel_sort_writes_same_bytes_as_in_memory_save() {
+        let records = [
+            ("read_b", 30),
+            ("read_a", 10),
+            ("read_c", 40),
+            ("read_a", 20),
+            ("read_d", 50),
+            ("read_e", 60),
+        ];
+        assert_bucket_builder_matches_in_memory_save(&records, 3, 3);
     }
 
     #[test]
@@ -818,14 +862,14 @@ mod tests {
             ("read_d", 50),
             ("read_e", 60),
         ];
-        assert_bucket_builder_matches_in_memory_save(&records, MIN_BUCKET_BITS);
-        assert_bucket_builder_matches_in_memory_save(&records, MAX_BUCKET_BITS);
+        assert_bucket_builder_matches_in_memory_save(&records, MIN_BUCKET_BITS, 2);
+        assert_bucket_builder_matches_in_memory_save(&records, MAX_BUCKET_BITS, 2);
     }
 
     #[test]
     fn bucket_builder_rejects_oversized_bucket() {
         let path = temp_index_path("oversized-bucket");
-        let mut builder = BucketIndexBuilder::new(path.to_str().unwrap(), 16, 1, None).unwrap();
+        let mut builder = BucketIndexBuilder::new(path.to_str().unwrap(), 16, 1, 1, None).unwrap();
         builder.add("same-read", 10).unwrap();
 
         let err = builder.add("same-read", 20).unwrap_err();
@@ -845,6 +889,7 @@ mod tests {
                 path.to_str().unwrap(),
                 BUCKET_STAGING_BUFFER_SIZE,
                 MIN_BUCKET_BITS,
+                DEFAULT_SORT_THREADS,
                 Some(temp_parent.to_str().unwrap()),
             )
             .unwrap();
@@ -1022,12 +1067,19 @@ mod tests {
         }
     }
 
-    fn assert_bucket_builder_matches_in_memory_save(records: &[(&str, i64)], bucket_bits: u8) {
+    fn assert_bucket_builder_matches_in_memory_save(
+        records: &[(&str, i64)],
+        bucket_bits: u8,
+        sort_threads: usize,
+    ) {
         let metadata = test_bam_metadata();
-        let in_memory_path = temp_index_path(&format!("in-memory-bits-{bucket_bits}"));
-        let bucket_path = temp_index_path(&format!("bucket-bits-{bucket_bits}"));
+        let in_memory_path = temp_index_path(&format!(
+            "in-memory-bits-{bucket_bits}-threads-{sort_threads}"
+        ));
+        let bucket_path =
+            temp_index_path(&format!("bucket-bits-{bucket_bits}-threads-{sort_threads}"));
         let bucket_tmp = env::temp_dir().join(format!(
-            "qbix-bucket-test-bits-{bucket_bits}-{}",
+            "qbix-bucket-test-bits-{bucket_bits}-threads-{sort_threads}-{}",
             process::id()
         ));
         std::fs::create_dir_all(&bucket_tmp).unwrap();
@@ -1037,6 +1089,7 @@ mod tests {
             bucket_path.to_str().unwrap(),
             DEFAULT_INDEX_MEMORY_LIMIT,
             bucket_bits,
+            sort_threads,
             Some(bucket_tmp.to_str().unwrap()),
         )
         .unwrap();

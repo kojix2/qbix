@@ -1,7 +1,8 @@
 use crate::commands::{self, CheckMode, ColorMode, GetOrder, OutputFormat, StatsFormat};
 use crate::error::Result;
 use crate::index::{
-    DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, MAX_BUCKET_BITS, MIN_BUCKET_BITS,
+    DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, DEFAULT_SORT_THREADS, MAX_BUCKET_BITS,
+    MIN_BUCKET_BITS,
 };
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -22,6 +23,7 @@ const ARG_READNAMES: &str = "readnames";
 const ARG_THREADS: &str = "threads";
 const ARG_MEMORY: &str = "memory";
 const ARG_BUCKET_BITS: &str = "bucket_bits";
+const ARG_SORT_THREADS: &str = "sort_threads";
 const ARG_TEMP_DIR: &str = "temp_dir";
 const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
@@ -60,15 +62,19 @@ where
             threads,
             memory_limit,
             bucket_bits,
+            sort_threads,
             temp_dir,
         } => commands::build_index(
             &input_bam,
-            output_index.as_deref(),
-            verbose,
-            threads,
-            memory_limit,
-            bucket_bits,
-            temp_dir.as_deref(),
+            commands::BuildIndexOptions {
+                output_index: output_index.as_deref(),
+                verbose,
+                threads,
+                memory_limit,
+                bucket_bits,
+                sort_threads,
+                temp_dir: temp_dir.as_deref(),
+            },
         ),
         Action::Get {
             input_bam,
@@ -156,6 +162,7 @@ enum Action {
         threads: usize,
         memory_limit: usize,
         bucket_bits: u8,
+        sort_threads: usize,
         temp_dir: Option<String>,
     },
     Get {
@@ -195,6 +202,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             threads: threads(matches)?,
             memory_limit: memory_limit(matches)?,
             bucket_bits: bucket_bits(matches)?,
+            sort_threads: sort_threads(matches)?,
             temp_dir: optional_string(matches, ARG_TEMP_DIR),
         }),
         Some((COMMAND_GET, matches)) => Ok(Action::Get {
@@ -249,6 +257,7 @@ fn index_command() -> Command {
         .arg(threads_arg())
         .arg(memory_arg())
         .arg(bucket_bits_arg())
+        .arg(sort_threads_arg())
         .arg(temp_dir_arg())
         .arg(verbose_arg())
         .arg(input_bam_arg())
@@ -479,6 +488,14 @@ fn bucket_bits_arg() -> Arg {
         .help("Bucket prefix bits for index building (advanced)")
 }
 
+fn sort_threads_arg() -> Arg {
+    Arg::new(ARG_SORT_THREADS)
+        .long("sort-threads")
+        .value_name("INT")
+        .default_value("1")
+        .help("Number of bucket sort worker threads; may use up to INT * --memory")
+}
+
 fn temp_dir_arg() -> Arg {
     Arg::new(ARG_TEMP_DIR)
         .long("temp-dir")
@@ -534,6 +551,18 @@ fn bucket_bits(matches: &ArgMatches) -> Result<u8> {
         ));
     }
     Ok(bits)
+}
+
+fn sort_threads(matches: &ArgMatches) -> Result<usize> {
+    let value = optional_string(matches, ARG_SORT_THREADS)
+        .unwrap_or_else(|| DEFAULT_SORT_THREADS.to_string());
+    let threads = value
+        .parse::<usize>()
+        .map_err(|_| "[qbix] sort threads must be a positive integer".to_string())?;
+    if threads == 0 {
+        return Err("[qbix] sort threads must be a positive integer".to_string());
+    }
+    Ok(threads)
 }
 
 fn parse_size(value: &str) -> Result<usize> {
@@ -679,6 +708,7 @@ mod tests {
                 threads: 1,
                 memory_limit: DEFAULT_INDEX_MEMORY_LIMIT,
                 bucket_bits: DEFAULT_BUCKET_BITS,
+                sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
             }
         );
@@ -693,6 +723,8 @@ mod tests {
             "2G",
             "--bucket-bits",
             "10",
+            "--sort-threads",
+            "3",
             "--temp-dir",
             "tmp",
             "reads.bam",
@@ -708,6 +740,7 @@ mod tests {
                 threads: 1,
                 memory_limit: 2 * 1024 * 1024 * 1024,
                 bucket_bits: 10,
+                sort_threads: 3,
                 temp_dir: Some("tmp".to_string()),
             }
         );
@@ -914,6 +947,20 @@ mod tests {
     fn rejects_zero_threads() {
         let err =
             parse_args(strings(["qbix", "index", "--threads", "0", "reads.bam"])).unwrap_err();
+        assert!(err.contains("positive integer"));
+    }
+
+    #[test]
+    fn rejects_zero_sort_threads() {
+        let err = parse_args(strings([
+            "qbix",
+            "index",
+            "--sort-threads",
+            "0",
+            "reads.bam",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("sort threads"));
         assert!(err.contains("positive integer"));
     }
 

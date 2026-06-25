@@ -3,16 +3,22 @@ use std::path::{Path, PathBuf};
 use crate::commands;
 use crate::error::{Error, PublicResult as Result};
 use crate::hts::{BamRecord, Header, HtsFile};
-use crate::index::{generate_index_filename, BamMetadata, Index};
+use crate::index::{
+    generate_index_filename, BamMetadata, Index, DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT,
+};
 
 const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Options used when building a `.qbi` index.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct BuildOptions {
     pub index_path: Option<PathBuf>,
     pub threads: usize,
     pub verbose: bool,
+    pub memory_limit: Option<usize>,
+    pub bucket_bits: Option<u8>,
+    pub temp_dir: Option<PathBuf>,
 }
 
 impl Default for BuildOptions {
@@ -21,12 +27,16 @@ impl Default for BuildOptions {
             index_path: None,
             threads: 1,
             verbose: false,
+            memory_limit: None,
+            bucket_bits: None,
+            temp_dir: None,
         }
     }
 }
 
 /// Options used when opening a BAM and `.qbi` index for lookup.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LookupOptions {
     pub index_path: Option<PathBuf>,
     pub threads: usize,
@@ -43,6 +53,7 @@ impl Default for LookupOptions {
 
 /// Options used when checking an index against its BAM file.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CheckOptions {
     pub index_path: Option<PathBuf>,
     pub threads: usize,
@@ -107,11 +118,15 @@ where
     validate_threads(options.threads)?;
     let input_bam = path_to_str(input_bam.as_ref(), "BAM path")?;
     let index_path = optional_path_to_str(options.index_path.as_deref(), "index path")?;
+    let temp_dir = optional_path_to_str(options.temp_dir.as_deref(), "temporary directory")?;
     commands::build_index(
         input_bam,
         index_path.as_deref(),
         options.verbose,
         options.threads,
+        options.memory_limit.unwrap_or(DEFAULT_INDEX_MEMORY_LIMIT),
+        options.bucket_bits.unwrap_or(DEFAULT_BUCKET_BITS),
+        temp_dir.as_deref(),
     )
     .map_err(Error::from)?;
     let written =

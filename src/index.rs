@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::error::Result;
@@ -8,9 +9,11 @@ use memmap2::Mmap;
 use xxhash_rust::xxh3::xxh3_64;
 
 const INDEX_IO_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+const BUCKET_STAGING_BUFFER_SIZE: usize = 64 * 1024;
 const MAGIC: &[u8; 4] = b"QBI1";
 const HEADER_SIZE: u16 = 48;
 const RECORD_SIZE: u16 = 16;
+const RECORD_SIZE_BYTES: usize = 16;
 const HEADER_SIZE_OFFSET: usize = 4;
 const RECORD_SIZE_OFFSET: usize = 6;
 const NAME_BYTES_OFFSET: usize = 8;
@@ -20,6 +23,10 @@ const BAM_MTIME_OFFSET: usize = 32;
 const BAM_HEADER_HASH_OFFSET: usize = 40;
 const RECORD_QHASH_OFFSET: usize = 0;
 const RECORD_FILE_OFFSET: usize = 8;
+pub(crate) const DEFAULT_INDEX_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
+pub(crate) const DEFAULT_BUCKET_BITS: u8 = 8;
+pub(crate) const MIN_BUCKET_BITS: u8 = 1;
+pub(crate) const MAX_BUCKET_BITS: u8 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BamMetadata {
@@ -66,7 +73,16 @@ pub(crate) struct Record {
     pub(crate) file_offset: i64,
 }
 
+impl Record {
+    fn cmp_key(&self, other: &Self) -> Ordering {
+        self.qhash
+            .cmp(&other.qhash)
+            .then_with(|| self.file_offset.cmp(&other.file_offset))
+    }
+}
+
 #[derive(Debug)]
+#[allow(dead_code)]
 enum IndexStorage {
     Owned { records: Vec<Record> },
     Mapped(MappedIndex),
@@ -86,10 +102,12 @@ struct RawDiskRecord {
     file_offset: i64,
 }
 
+#[allow(dead_code)]
 struct OwnedIndexMut<'a> {
     records: &'a mut Vec<Record>,
 }
 
+#[allow(dead_code)]
 impl IndexStorage {
     fn owned_mut(&mut self) -> Result<OwnedIndexMut<'_>> {
         match self {
@@ -131,6 +149,7 @@ pub(crate) struct Index {
 }
 
 impl Index {
+    #[allow(dead_code)]
     pub(crate) fn new() -> Self {
         Self {
             storage: IndexStorage::Owned {
@@ -139,6 +158,7 @@ impl Index {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn add(&mut self, readname: &str, file_offset: i64) -> Result<()> {
         if file_offset < 0 {
             return Err("[qbix] cannot index a negative BGZF offset".to_string());
@@ -151,30 +171,18 @@ impl Index {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn save(&mut self, filename: &str, bam_metadata: BamMetadata) -> Result<()> {
         let owned = self.storage.owned_mut()?;
-        owned.records.sort_by(|a, b| {
-            a.qhash
-                .cmp(&b.qhash)
-                .then_with(|| a.file_offset.cmp(&b.file_offset))
-        });
+        owned.records.sort_unstable_by(Record::cmp_key);
 
         let file = File::create(filename)
             .map_err(|e| format!("[qbix] could not open index for writing '{filename}': {e}"))?;
         let mut fp = BufWriter::with_capacity(INDEX_IO_BUFFER_SIZE, file);
-        fp.write_all(MAGIC)
-            .map_err(|_| "[qbix] write error while writing file magic".to_string())?;
-        write_u16_le(&mut fp, HEADER_SIZE, "header size")?;
-        write_u16_le(&mut fp, RECORD_SIZE, "record size")?;
-        write_u64_le(&mut fp, 0usize, "read name byte count")?;
-        write_u64_le(&mut fp, owned.records.len(), "record count")?;
-        write_u64_le(&mut fp, bam_metadata.size, "BAM size")?;
-        write_u64_le(&mut fp, bam_metadata.mtime, "BAM mtime")?;
-        write_u64_le(&mut fp, bam_metadata.header_hash, "BAM header hash")?;
+        write_header(&mut fp, owned.records.len(), bam_metadata)?;
 
         for record in owned.records.iter() {
-            write_u64_le(&mut fp, record.qhash, "index record")?;
-            write_u64_le(&mut fp, record.file_offset, "index record")?;
+            write_record(&mut fp, *record)?;
         }
         fp.flush()
             .map_err(|e| format!("[qbix] could not close index after writing '{filename}': {e}"))?;
@@ -272,19 +280,6 @@ impl Index {
         }
     }
 
-    pub(crate) fn last_record(&self) -> Result<Option<Record>> {
-        match &self.storage {
-            IndexStorage::Owned { records } => Ok(records.last().copied()),
-            IndexStorage::Mapped(mapped) => {
-                if mapped.record_count == 0 {
-                    Ok(None)
-                } else {
-                    mapped.record(mapped.record_count - 1).map(Some)
-                }
-            }
-        }
-    }
-
     pub(crate) fn record(&self, index: usize) -> Result<Record> {
         match &self.storage {
             IndexStorage::Owned { records } => records
@@ -320,6 +315,296 @@ impl Index {
     }
 }
 
+pub(crate) struct BucketIndexBuilder {
+    buckets: Vec<BucketState>,
+    bucket_bits: u8,
+    memory_limit: usize,
+    total_records: usize,
+    output_path: PathBuf,
+    final_tmp_path: PathBuf,
+    guard: TempGuard,
+}
+
+impl BucketIndexBuilder {
+    pub(crate) fn new(
+        output_index: &str,
+        memory_limit: usize,
+        bucket_bits: u8,
+        temp_dir: Option<&str>,
+    ) -> Result<Self> {
+        if memory_limit < usize::from(RECORD_SIZE) {
+            return Err("[qbix] memory limit must be at least 16 bytes".to_string());
+        }
+        validate_bucket_bits(bucket_bits)?;
+
+        let output_path = PathBuf::from(output_index);
+        let output_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
+        let bucket_parent_dir = temp_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| output_dir.into());
+        std::fs::create_dir_all(&bucket_parent_dir).map_err(|e| {
+            format!(
+                "[qbix] could not create temporary directory '{}': {e}",
+                bucket_parent_dir.display()
+            )
+        })?;
+        let bucket_dir = create_unique_work_dir(&bucket_parent_dir)?;
+        let final_tmp_path = final_tmp_path(&output_path);
+        let mut guard = TempGuard::new();
+        guard.track_file(final_tmp_path.clone());
+        guard.track_dir(bucket_dir.clone());
+
+        let bucket_count = 1usize << bucket_bits;
+        let mut buckets = Vec::with_capacity(bucket_count);
+        for bucket in 0..bucket_count {
+            let path = bucket_dir.join(format!("bucket-{bucket:04}.tmp"));
+            buckets.push(BucketState {
+                path,
+                buffer: None,
+                bytes: 0,
+                records: 0,
+            });
+        }
+
+        Ok(Self {
+            buckets,
+            bucket_bits,
+            memory_limit,
+            total_records: 0,
+            output_path,
+            final_tmp_path,
+            guard,
+        })
+    }
+
+    pub(crate) fn add(&mut self, readname: &str, file_offset: i64) -> Result<Record> {
+        if file_offset < 0 {
+            return Err("[qbix] cannot index a negative BGZF offset".to_string());
+        }
+        let record = Record {
+            qhash: qname_hash64(readname.as_bytes()),
+            file_offset,
+        };
+        let bucket = (record.qhash >> (64 - self.bucket_bits)) as usize;
+        let state = &mut self.buckets[bucket];
+        state.bytes = state
+            .bytes
+            .checked_add(u64::from(RECORD_SIZE))
+            .ok_or_else(|| "[qbix] bucket is too large".to_string())?;
+        if state.bytes
+            > u64::try_from(self.memory_limit)
+                .map_err(|_| "[qbix] memory limit is too large".to_string())?
+        {
+            return Err(format!(
+                "[qbix] bucket {bucket} is too large; retry with larger --memory or higher --bucket-bits"
+            ));
+        }
+        state.records = state
+            .records
+            .checked_add(1)
+            .ok_or_else(|| "[qbix] too many records for one bucket".to_string())?;
+        self.total_records = self
+            .total_records
+            .checked_add(1)
+            .ok_or_else(|| "[qbix] too many records for this platform".to_string())?;
+        state
+            .push_record(record)
+            .map_err(|e| format!("[qbix] could not write bucket temp file: {e}"))?;
+        Ok(record)
+    }
+
+    pub(crate) fn total_records(&self) -> usize {
+        self.total_records
+    }
+
+    pub(crate) fn finish(mut self, bam_metadata: BamMetadata) -> Result<()> {
+        for bucket in &mut self.buckets {
+            bucket
+                .flush()
+                .map_err(|e| format!("[qbix] could not flush bucket temp file: {e}"))?;
+        }
+
+        let file = File::create(&self.final_tmp_path).map_err(|e| {
+            format!(
+                "[qbix] could not open temporary index for writing '{}': {e}",
+                self.final_tmp_path.display()
+            )
+        })?;
+        let mut out = BufWriter::with_capacity(INDEX_IO_BUFFER_SIZE, file);
+        write_header(&mut out, self.total_records, bam_metadata)?;
+
+        for bucket in &self.buckets {
+            let mut records = bucket.read_records(self.memory_limit)?;
+            records.sort_unstable_by(Record::cmp_key);
+            for record in records {
+                write_record(&mut out, record)?;
+            }
+            if bucket.bytes > 0 {
+                let _ = std::fs::remove_file(&bucket.path);
+            }
+        }
+
+        out.flush().map_err(|e| {
+            format!(
+                "[qbix] could not close temporary index '{}': {e}",
+                self.final_tmp_path.display()
+            )
+        })?;
+        drop(out);
+        std::fs::rename(&self.final_tmp_path, &self.output_path).map_err(|e| {
+            format!(
+                "[qbix] could not rename temporary index '{}' to '{}': {e}",
+                self.final_tmp_path.display(),
+                self.output_path.display()
+            )
+        })?;
+        self.guard.disarm();
+        self.guard.remove_tracked_dirs_best_effort();
+        Ok(())
+    }
+}
+
+struct BucketState {
+    path: PathBuf,
+    buffer: Option<Vec<u8>>,
+    bytes: u64,
+    records: u64,
+}
+
+impl BucketState {
+    fn push_record(&mut self, record: Record) -> std::io::Result<()> {
+        let buffer = self
+            .buffer
+            .get_or_insert_with(|| Vec::with_capacity(BUCKET_STAGING_BUFFER_SIZE));
+        buffer.extend_from_slice(&record.qhash.to_le_bytes());
+        buffer.extend_from_slice(&record.file_offset.to_le_bytes());
+        if buffer.len() >= BUCKET_STAGING_BUFFER_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let Some(buffer) = self.buffer.as_mut() else {
+            return Ok(());
+        };
+        if buffer.is_empty() {
+            return Ok(());
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        file.write_all(buffer)?;
+        buffer.clear();
+        Ok(())
+    }
+
+    fn read_records(&self, memory_limit: usize) -> Result<Vec<Record>> {
+        if self.bytes == 0 {
+            return Ok(Vec::new());
+        }
+        if self.bytes
+            > u64::try_from(memory_limit)
+                .map_err(|_| "[qbix] memory limit is too large".to_string())?
+        {
+            return Err(format!(
+                "[qbix] bucket '{}' is too large; retry with larger --memory or higher --bucket-bits",
+                self.path.display()
+            ));
+        }
+        let capacity = usize::try_from(self.records)
+            .map_err(|_| "[qbix] bucket record count does not fit on this platform".to_string())?;
+        let expected_bytes = self
+            .records
+            .checked_mul(u64::from(RECORD_SIZE))
+            .ok_or_else(|| "[qbix] bucket size is too large".to_string())?;
+        if self.bytes != expected_bytes {
+            return Err("[qbix] corrupt bucket temp file: size mismatch".to_string());
+        }
+        let actual_bytes = std::fs::metadata(&self.path)
+            .map_err(|e| {
+                format!(
+                    "[qbix] could not stat bucket temp file '{}': {e}",
+                    self.path.display()
+                )
+            })?
+            .len();
+        if actual_bytes != self.bytes {
+            return Err("[qbix] corrupt bucket temp file: file size mismatch".to_string());
+        }
+
+        let mut file = File::open(&self.path).map_err(|e| {
+            format!(
+                "[qbix] could not open bucket temp file '{}': {e}",
+                self.path.display()
+            )
+        })?;
+        let mut records = Vec::with_capacity(capacity);
+        let mut raw = [0u8; RECORD_SIZE_BYTES];
+        for _ in 0..self.records {
+            file.read_exact(&mut raw).map_err(|e| {
+                format!(
+                    "[qbix] could not read bucket temp file '{}': {e}",
+                    self.path.display()
+                )
+            })?;
+            let qhash = read_u64_le_from(&raw[..8], "bucket record")?;
+            let file_offset = read_u64_le_i64_from(&raw[8..], "bucket record")?;
+            records.push(Record { qhash, file_offset });
+        }
+        Ok(records)
+    }
+}
+
+struct TempGuard {
+    files: Vec<PathBuf>,
+    dirs: Vec<PathBuf>,
+    armed: bool,
+}
+
+impl TempGuard {
+    fn new() -> Self {
+        Self {
+            files: Vec::new(),
+            dirs: Vec::new(),
+            armed: true,
+        }
+    }
+
+    fn track_file(&mut self, path: PathBuf) {
+        self.files.push(path);
+    }
+
+    fn track_dir(&mut self, path: PathBuf) {
+        self.dirs.push(path);
+    }
+
+    fn remove_tracked_dirs_best_effort(&mut self) {
+        for dir in self.dirs.drain(..) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        for path in &self.files {
+            let _ = std::fs::remove_file(path);
+        }
+        for path in &self.dirs {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
 pub(crate) fn generate_index_filename(
     input_bam: Option<&str>,
     input_index: Option<&str>,
@@ -347,6 +632,80 @@ fn validate_bam_metadata(actual: BamMetadata, expected: BamMetadata) -> Result<(
 
 pub(crate) fn qname_hash64(qname: &[u8]) -> u64 {
     xxh3_64(qname)
+}
+
+fn validate_bucket_bits(bucket_bits: u8) -> Result<()> {
+    if !(MIN_BUCKET_BITS..=MAX_BUCKET_BITS).contains(&bucket_bits) {
+        return Err(format!(
+            "[qbix] bucket bits must be between {MIN_BUCKET_BITS} and {MAX_BUCKET_BITS}"
+        ));
+    }
+    Ok(())
+}
+
+fn final_tmp_path(output_path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let filename = output_path
+        .file_name()
+        .map(|name| format!("{}.tmp.{pid}", name.to_string_lossy()))
+        .unwrap_or_else(|| format!("qbix-index.tmp.{pid}"));
+    output_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(filename)
+}
+
+fn create_unique_work_dir(parent: &Path) -> Result<PathBuf> {
+    const MAX_TRIES: usize = 100;
+    let pid = std::process::id();
+    for attempt in 0..MAX_TRIES {
+        let unique = temp_unique_suffix();
+        let path = parent.join(format!("qbix-buckets-{pid}-{attempt:03}-{unique}.tmp"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "[qbix] could not create temporary directory '{}': {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "[qbix] could not create a unique temporary directory in '{}'",
+        parent.display()
+    ))
+}
+
+fn temp_unique_suffix() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{now}", std::process::id())
+}
+
+fn write_header<W: Write>(
+    writer: &mut W,
+    record_count: usize,
+    bam_metadata: BamMetadata,
+) -> Result<()> {
+    writer
+        .write_all(MAGIC)
+        .map_err(|_| "[qbix] write error while writing file magic".to_string())?;
+    write_u16_le(writer, HEADER_SIZE, "header size")?;
+    write_u16_le(writer, RECORD_SIZE, "record size")?;
+    write_u64_le(writer, 0usize, "read name byte count")?;
+    write_u64_le(writer, record_count, "record count")?;
+    write_u64_le(writer, bam_metadata.size, "BAM size")?;
+    write_u64_le(writer, bam_metadata.mtime, "BAM mtime")?;
+    write_u64_le(writer, bam_metadata.header_hash, "BAM header hash")
+}
+
+fn write_record<W: Write>(writer: &mut W, record: Record) -> Result<()> {
+    write_u64_le(writer, record.qhash, "index record")?;
+    write_u64_le(writer, record.file_offset, "index record")
 }
 
 fn read_u16_le_from(bytes: &[u8], what: &str) -> Result<u16> {
@@ -436,6 +795,86 @@ mod tests {
         }
         assert_eq!(offsets, [10, 20]);
         assert!(loaded.range_indices("missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn bucket_builder_writes_same_bytes_as_in_memory_save() {
+        let records = [
+            ("read_b", 30),
+            ("read_a", 10),
+            ("read_c", 40),
+            ("read_a", 20),
+        ];
+        assert_bucket_builder_matches_in_memory_save(&records, 2);
+    }
+
+    #[test]
+    fn bucket_builder_matches_in_memory_save_at_bucket_bit_bounds() {
+        let records = [
+            ("read_b", 30),
+            ("read_a", 10),
+            ("read_c", 40),
+            ("read_a", 20),
+            ("read_d", 50),
+            ("read_e", 60),
+        ];
+        assert_bucket_builder_matches_in_memory_save(&records, MIN_BUCKET_BITS);
+        assert_bucket_builder_matches_in_memory_save(&records, MAX_BUCKET_BITS);
+    }
+
+    #[test]
+    fn bucket_builder_rejects_oversized_bucket() {
+        let path = temp_index_path("oversized-bucket");
+        let mut builder = BucketIndexBuilder::new(path.to_str().unwrap(), 16, 1, None).unwrap();
+        builder.add("same-read", 10).unwrap();
+
+        let err = builder.add("same-read", 20).unwrap_err();
+        assert!(err.contains("bucket"));
+        assert!(err.contains("too large"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bucket_builder_cleans_temp_dir_after_flushed_oversized_bucket_error() {
+        let temp_parent =
+            env::temp_dir().join(format!("qbix-flushed-error-cleanup-{}", process::id()));
+        std::fs::create_dir_all(&temp_parent).unwrap();
+        let path = temp_index_path("flushed-oversized-bucket");
+        {
+            let mut builder = BucketIndexBuilder::new(
+                path.to_str().unwrap(),
+                BUCKET_STAGING_BUFFER_SIZE,
+                MIN_BUCKET_BITS,
+                Some(temp_parent.to_str().unwrap()),
+            )
+            .unwrap();
+            for offset in 0..(BUCKET_STAGING_BUFFER_SIZE / RECORD_SIZE_BYTES) {
+                builder.add("same-read", offset as i64).unwrap();
+            }
+            assert!(temp_parent
+                .read_dir()
+                .unwrap()
+                .next()
+                .expect("work directory should exist after flush")
+                .unwrap()
+                .path()
+                .read_dir()
+                .unwrap()
+                .next()
+                .is_some());
+
+            let err = builder
+                .add(
+                    "same-read",
+                    (BUCKET_STAGING_BUFFER_SIZE / RECORD_SIZE_BYTES) as i64,
+                )
+                .unwrap_err();
+            assert!(err.contains("too large"));
+        }
+
+        assert!(temp_parent.read_dir().unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(&temp_parent);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -581,6 +1020,43 @@ mod tests {
             mtime: 456,
             header_hash: 789,
         }
+    }
+
+    fn assert_bucket_builder_matches_in_memory_save(records: &[(&str, i64)], bucket_bits: u8) {
+        let metadata = test_bam_metadata();
+        let in_memory_path = temp_index_path(&format!("in-memory-bits-{bucket_bits}"));
+        let bucket_path = temp_index_path(&format!("bucket-bits-{bucket_bits}"));
+        let bucket_tmp = env::temp_dir().join(format!(
+            "qbix-bucket-test-bits-{bucket_bits}-{}",
+            process::id()
+        ));
+        std::fs::create_dir_all(&bucket_tmp).unwrap();
+
+        let mut index = Index::new();
+        let mut builder = BucketIndexBuilder::new(
+            bucket_path.to_str().unwrap(),
+            DEFAULT_INDEX_MEMORY_LIMIT,
+            bucket_bits,
+            Some(bucket_tmp.to_str().unwrap()),
+        )
+        .unwrap();
+        for (readname, offset) in records {
+            index.add(readname, *offset).unwrap();
+            builder.add(readname, *offset).unwrap();
+        }
+
+        index
+            .save(in_memory_path.to_str().unwrap(), metadata)
+            .unwrap();
+        builder.finish(metadata).unwrap();
+
+        let in_memory = std::fs::read(&in_memory_path).unwrap();
+        let bucket = std::fs::read(&bucket_path).unwrap();
+        let _ = std::fs::remove_file(&in_memory_path);
+        let _ = std::fs::remove_file(&bucket_path);
+        let _ = std::fs::remove_dir_all(&bucket_tmp);
+
+        assert_eq!(bucket, in_memory, "bucket_bits={bucket_bits}");
     }
 
     fn temp_index_path(name: &str) -> std::path::PathBuf {

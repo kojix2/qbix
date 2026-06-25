@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::hts::{BamRecord, Header, HtsFile};
-use crate::index::{generate_index_filename, qname_hash64, BamMetadata, Index};
+use crate::index::{generate_index_filename, qname_hash64, BamMetadata, BucketIndexBuilder, Index};
 use std::io::IsTerminal;
 #[cfg(feature = "biosyntax")]
 use std::io::Write;
@@ -73,6 +73,9 @@ pub(crate) fn build_index(
     output_index: Option<&str>,
     verbose: bool,
     threads: usize,
+    memory_limit: usize,
+    bucket_bits: u8,
+    temp_dir: Option<&str>,
 ) -> Result<()> {
     let bam =
         HtsFile::open(input_bam, "r").map_err(|_| format!("[qbix] could not open {input_bam}"))?;
@@ -82,7 +85,8 @@ pub(crate) fn build_index(
         .map_err(|_| format!("[qbix] could not read BAM header from {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let rec = BamRecord::new()?;
-    let mut index = Index::new();
+    let out_fn = generate_index_filename(Some(input_bam), output_index)?;
+    let mut builder = BucketIndexBuilder::new(&out_fn, memory_limit, bucket_bits, temp_dir)?;
     let mut file_offset = bam
         .tell()
         .map_err(|_| format!("[qbix] {input_bam} is not a BGZF-compressed BAM file"))?;
@@ -99,14 +103,15 @@ pub(crate) fn build_index(
         }
 
         let readname = rec.qname()?;
-        index.add(readname, file_offset)?;
-        if verbose && (index.record_count() == 1 || index.record_count().is_multiple_of(100_000)) {
-            let last = index.last_record()?.expect("record was just added");
+        let record = builder.add(readname, file_offset)?;
+        if verbose
+            && (builder.total_records() == 1 || builder.total_records().is_multiple_of(100_000))
+        {
             eprintln!(
                 "[qbix] build: record {} [{} {}] {}",
-                index.record_count(),
-                last.qhash,
-                last.file_offset,
+                builder.total_records(),
+                record.qhash,
+                record.file_offset,
                 readname
             );
         }
@@ -116,13 +121,10 @@ pub(crate) fn build_index(
     if verbose {
         eprintln!("[qbix] build: writing to disk...");
     }
-    let out_fn = generate_index_filename(Some(input_bam), output_index)?;
-    index.save(&out_fn, bam_metadata)?;
+    let total_records = builder.total_records();
+    builder.finish(bam_metadata)?;
     if verbose {
-        eprintln!(
-            "[qbix] build: wrote index for {} records.",
-            index.record_count()
-        );
+        eprintln!("[qbix] build: wrote index for {total_records} records.");
     }
     Ok(())
 }

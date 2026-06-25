@@ -27,14 +27,9 @@ fn public_api_builds_opens_and_queries_an_index() {
     assert_eq!(index_path, PathBuf::from(format!("{bam_str}.qbi")));
 
     qbix::check_index(&bam, qbix::CheckOptions::default()).unwrap();
-    qbix::check_index(
-        &bam,
-        qbix::CheckOptions {
-            mode: qbix::CheckMode::Full,
-            ..qbix::CheckOptions::default()
-        },
-    )
-    .unwrap();
+    let mut check_options = qbix::CheckOptions::default();
+    check_options.mode = qbix::CheckMode::Full;
+    qbix::check_index(&bam, check_options).unwrap();
 
     let records = qbix::read_index_records(&index_path).unwrap();
     assert_eq!(records.len(), 3);

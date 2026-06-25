@@ -67,6 +67,27 @@ Records are sorted by:
 This ordering allows readers to binary-search the record table for all
 candidates matching a read-name hash.
 
+## Build Algorithm
+
+The on-disk format is independent of the builder implementation. Current
+`qbix index` builds large indexes by partitioning records into temporary bucket
+files using the high bits of `qhash`, then sorting one bucket at a time and
+appending the sorted records to the final `QBI1` file.
+
+Default build settings are:
+
+- `--memory 512M`: maximum size of one bucket loaded during final sorting
+- `--bucket-bits 8`: 256 temporary buckets
+- `--temp-dir`: unset, so bucket temporary files are placed next to the output
+  index
+
+The final temporary index is always written in the same directory as the output
+index before being renamed into place. Bucket temporary files are written under
+a unique work directory created below `--temp-dir`, or below the output index
+directory when `--temp-dir` is unset. During a build, temporary disk use is
+roughly one additional index-sized file for bucket records, plus the final
+temporary index while it is being assembled.
+
 ## Hashes
 
 Read-name hashes use XXH3-64 over the exact BAM `QNAME` byte sequence as

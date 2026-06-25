@@ -12,6 +12,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=HTSLIB_STATIC");
     println!("cargo:rerun-if-env-changed=HTS_STATIC");
     println!("cargo:rerun-if-env-changed=LIBBIOSYNTAX_DIR");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR");
 
     let htsdir = env::var("HTSDIR").ok().filter(|value| !value.is_empty());
     let libdeflate_prefix = env::var("LIBDEFLATE_PREFIX")
@@ -33,6 +36,8 @@ fn main() {
     }
     if let Some(prefix) = &libdeflate_prefix {
         println!("cargo:rustc-link-search=native={prefix}/lib");
+    } else {
+        emit_pkg_config_libdir("libdeflate");
     }
     if static_htslib && target_os() == "linux" {
         emit_pkg_config_libdir("zlib");

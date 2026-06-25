@@ -19,7 +19,6 @@ struct RawBam1 {
 }
 
 #[link(name = "hts")]
-#[link(name = "deflate")]
 #[link(name = "z")]
 extern "C" {
     fn hts_open(path: *const c_char, mode: *const c_char) -> *mut RawHtsFile;

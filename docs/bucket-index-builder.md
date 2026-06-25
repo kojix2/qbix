@@ -211,8 +211,8 @@ qbix index --memory 512M --bucket-bits 8 --temp-dir DIR reads.bam
 
 `--memory` accepts integer values with optional `K`, `M`, or `G` suffixes.
 
-`--sort-threads` is independent of htslib `--threads`.  It only parallelizes
-bucket sorting during final index assembly.
+`--sort-threads` is independent of `--bgzf-threads` / `-@`.  It only
+parallelizes bucket sorting during final index assembly.
 
 ## Rust API
 

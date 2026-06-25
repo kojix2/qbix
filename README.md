@@ -139,10 +139,10 @@ qbix get --color always reads.bam read_a
 qbix get --color never reads.bam read_a
 ```
 
-Use more htslib threads:
+Use more BGZF/htslib I/O threads:
 
 ```sh
-qbix index -@ 4 reads.bam
+qbix index --bgzf-threads 4 reads.bam
 qbix get -@ 4 reads.bam read_a
 ```
 

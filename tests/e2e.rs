@@ -429,14 +429,14 @@ fn top_level_help_prints_to_stdout() {
 }
 
 #[test]
-fn accepts_threads_option_for_htslib_backed_commands() {
+fn accepts_bgzf_threads_option_for_htslib_backed_commands() {
     let temp = TempDir::new("threads");
     let bam = temp.path().join("reads.bam");
     let bam = bam.to_str().unwrap();
     write_unmapped_bam(bam, &["read_a", "read_b"]);
 
     assert_success(Command::new(qbix()).args(["index", "-@", "2", bam]));
-    assert_success(Command::new(qbix()).args(["check", "--threads", "2", bam]));
+    assert_success(Command::new(qbix()).args(["check", "--bgzf-threads", "2", bam]));
 
     let get = Command::new(qbix())
         .args(["get", "-@", "2", bam, "read_b"])

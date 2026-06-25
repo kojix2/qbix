@@ -466,9 +466,10 @@ fn readnames_arg() -> Arg {
 fn threads_arg() -> Arg {
     Arg::new(ARG_THREADS)
         .short('@')
-        .long("threads")
+        .long("bgzf-threads")
+        .alias("threads")
         .value_name("INT")
-        .help("Number of htslib threads")
+        .help("Number of BGZF/htslib I/O threads")
         .default_value("1")
 }
 
@@ -945,9 +946,34 @@ mod tests {
 
     #[test]
     fn rejects_zero_threads() {
-        let err =
-            parse_args(strings(["qbix", "index", "--threads", "0", "reads.bam"])).unwrap_err();
+        let err = parse_args(strings([
+            "qbix",
+            "index",
+            "--bgzf-threads",
+            "0",
+            "reads.bam",
+        ]))
+        .unwrap_err();
         assert!(err.contains("positive integer"));
+    }
+
+    #[test]
+    fn accepts_threads_alias() {
+        let action = parse_args(strings(["qbix", "index", "--threads", "2", "reads.bam"])).unwrap();
+
+        assert_eq!(
+            action,
+            Action::Index {
+                input_bam: "reads.bam".to_string(),
+                output_index: None,
+                verbose: false,
+                threads: 2,
+                memory_limit: DEFAULT_INDEX_MEMORY_LIMIT,
+                bucket_bits: DEFAULT_BUCKET_BITS,
+                sort_threads: DEFAULT_SORT_THREADS,
+                temp_dir: None,
+            }
+        );
     }
 
     #[test]

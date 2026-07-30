@@ -1,0 +1,13 @@
+/.pixi/
+/.matplotlib/
+/output/
+__pycache__/
+/data/**/*.bam
+/data/**/*.bam.bai
+/data/**/*.bri
+/data/**/*.atlantool-index/
+/data/**/.source-index-*/
+/data/**/*.aria2
+/tools/bri-src/
+/tools/bri
+/tools/atlantool-linux

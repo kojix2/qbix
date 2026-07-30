@@ -1,0 +1,22 @@
+[workspace]
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64"]
+
+[dependencies]
+matplotlib = ">=3.10,<4"
+python = "3.14.*"
+samtools = "1.24.*"
+time = ">=1.9,<2"
+
+[activation.env]
+MPLCONFIGDIR = ".matplotlib"
+
+[tasks]
+benchmark = "./run_quick_benchmark.sh"
+benchmark-full = "./run_full_benchmark.sh"
+preflight = "python benchmark.py preflight"
+prepare = "python benchmark.py prepare"
+index = "python benchmark.py index"
+check = "python benchmark.py check"
+queries = "python benchmark.py queries"
+summary = "python benchmark.py summary"

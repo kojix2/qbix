@@ -1,0 +1,43 @@
+name: Build Paper PDF
+
+on:
+  push:
+    paths:
+      - ".github/workflows/paper-pdf.yml"
+      - "paper/**"
+  pull_request:
+    paths:
+      - ".github/workflows/paper-pdf.yml"
+      - "paper/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build PDF
+        uses: xu-cheng/latex-action@v4
+        with:
+          root_file: paper.tex
+          working_directory: paper
+          os: debian
+          extra_system_packages: "pandoc lmodern"
+          pre_compile: |
+            pandoc paper.md \
+              --from markdown \
+              --to latex \
+              --standalone \
+              --citeproc \
+              --bibliography paper.bib \
+              --resource-path . \
+              --output paper.tex
+
+      - name: Upload PDF
+        uses: actions/upload-artifact@v7
+        with:
+          name: qbix-paper-pdf
+          path: paper/paper.pdf

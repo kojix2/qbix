@@ -287,7 +287,7 @@ fn get_command() -> Command {
                 .short('f')
                 .long("file")
                 .value_name("readnames.txt")
-                .help("Read read names from a file, or '-' for stdin"),
+                .help("Read names from a file, or '-' for stdin"),
         )
         .arg(
             Arg::new(ARG_OUTPUT_BAM)

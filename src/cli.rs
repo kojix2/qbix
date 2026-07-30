@@ -984,6 +984,13 @@ mod tests {
     }
 
     #[test]
+    fn default_bgzf_threads_stays_within_cap() {
+        let threads = default_bgzf_threads();
+        assert!(threads >= 1);
+        assert!(threads <= DEFAULT_BGZF_THREADS_CAP);
+    }
+
+    #[test]
     fn accepts_threads_alias() {
         let action = parse_args(strings(["qbix", "index", "--threads", "2", "reads.bam"])).unwrap();
 

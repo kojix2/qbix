@@ -199,7 +199,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
             output_index: optional_string(matches, ARG_INDEX),
             verbose: matches.get_flag(ARG_VERBOSE),
-            threads: threads(matches)?,
+            threads: threads(matches, default_bgzf_threads())?,
             memory_limit: memory_limit(matches)?,
             bucket_bits: bucket_bits(matches)?,
             sort_threads: sort_threads(matches)?,
@@ -209,7 +209,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
             input_index: optional_string(matches, ARG_INDEX),
             readnames: get_readnames(matches)?,
-            threads: threads(matches)?,
+            threads: threads(matches, 1)?,
             order: get_order(matches),
             output_format: output_format(matches)?,
             output_path: optional_string(matches, ARG_OUTPUT),
@@ -221,7 +221,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
         Some((COMMAND_CHECK, matches)) => Ok(Action::Check {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
             input_index: optional_string(matches, ARG_INDEX),
-            threads: threads(matches)?,
+            threads: threads(matches, 1)?,
             verbose: matches.get_flag(ARG_VERBOSE),
             mode: check_mode(matches),
         }),
@@ -254,7 +254,7 @@ fn index_command() -> Command {
     Command::new(COMMAND_INDEX)
         .about("Build a QNAME index for a BAM file")
         .arg(index_arg())
-        .arg(threads_arg())
+        .arg(index_threads_arg())
         .arg(memory_arg())
         .arg(bucket_bits_arg())
         .arg(sort_threads_arg())
@@ -463,14 +463,38 @@ fn readnames_arg() -> Arg {
         .num_args(1..)
 }
 
+// `index` reads the BAM sequentially. More BGZF threads make it faster.
+// `get` and `check` do scattered single-record seeks instead. A thread
+// pool adds overhead there with no streaming gain to offset it, so more
+// threads make them slower (measured, see benchmark notes). This cap
+// applies only to `index`.
+//
+// Many bioinformatics CLIs default I/O threads to 1. This keeps a tool
+// from using more of a shared or HPC node than the user asked for.
+//
+// Measured on chr21 BAM subsets (PacBio/ONT): 8 threads still give good
+// efficiency (75-80%). Past that, gains drop fast: 60% at 12 threads,
+// flat from 12 to 16. 8 is the best trade-off, without assuming a
+// generous default core count.
+const DEFAULT_BGZF_THREADS_CAP: usize = 8;
+
+fn default_bgzf_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(DEFAULT_BGZF_THREADS_CAP))
+        .unwrap_or(1)
+}
+
 fn threads_arg() -> Arg {
     Arg::new(ARG_THREADS)
         .short('@')
         .long("bgzf-threads")
         .alias("threads")
         .value_name("INT")
-        .help("Number of BGZF/htslib I/O threads")
-        .default_value("1")
+        .help("Number of BGZF/htslib I/O threads [default: 1]")
+}
+
+fn index_threads_arg() -> Arg {
+    threads_arg().help("Number of BGZF/htslib I/O threads [default: min(available cores, 8)]")
 }
 
 fn memory_arg() -> Arg {
@@ -523,11 +547,13 @@ fn optional_string(matches: &ArgMatches, name: &str) -> Option<String> {
     matches.get_one::<String>(name).cloned()
 }
 
-fn threads(matches: &ArgMatches) -> Result<usize> {
-    let threads = required_string(matches, ARG_THREADS)?;
-    let threads = threads
-        .parse::<usize>()
-        .map_err(|_| "[qbix] threads must be a positive integer".to_string())?;
+fn threads(matches: &ArgMatches, fallback: usize) -> Result<usize> {
+    let threads = match optional_string(matches, ARG_THREADS) {
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| "[qbix] threads must be a positive integer".to_string())?,
+        None => fallback,
+    };
     if threads == 0 {
         return Err("[qbix] threads must be a positive integer".to_string());
     }
@@ -706,7 +732,7 @@ mod tests {
                 input_bam: "reads.bam".to_string(),
                 output_index: Some("reads.qbi".to_string()),
                 verbose: true,
-                threads: 1,
+                threads: default_bgzf_threads(),
                 memory_limit: DEFAULT_INDEX_MEMORY_LIMIT,
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
@@ -738,7 +764,7 @@ mod tests {
                 input_bam: "reads.bam".to_string(),
                 output_index: None,
                 verbose: false,
-                threads: 1,
+                threads: default_bgzf_threads(),
                 memory_limit: 2 * 1024 * 1024 * 1024,
                 bucket_bits: 10,
                 sort_threads: 3,

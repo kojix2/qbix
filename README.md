@@ -111,6 +111,9 @@ Fetch records by QNAME. Output is SAM:
 qbix get reads.bam read_a read_b
 ```
 
+SAM output contains matching alignment records without the SAM header. 
+BAM output includes the source BAM header.
+
 Fetch records from a newline-delimited read-name file:
 
 ```sh

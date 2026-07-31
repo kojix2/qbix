@@ -9,7 +9,17 @@ description = "Random access to BAM records by read name using a compact .qbi in
 repository = "https://github.com/kojix2/qbix"
 keywords = ["bioinformatics", "bam", "htslib", "sam", "genomics"]
 categories = ["command-line-utilities", "science"]
-exclude = ["/.github"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/include/**",
+    "/docs/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+]
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]

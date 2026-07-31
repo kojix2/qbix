@@ -102,6 +102,20 @@ Create an index:
 qbix index reads.bam
 ```
 
+QBI1 remains the default. An experimental grouped radix index can be built
+explicitly; `get`, `show`, `check`, and `stats` detect either format:
+
+```sh
+qbix index --index-format qbi2 reads.bam
+```
+
+QBI2 is intended for evaluation and is not yet the default or a frozen format.
+Use `--qbi2-radix-bits 8` or `16` to compare its two experimental layouts;
+when omitted, the builder selects P=8 for at most 522,240 records and P=16
+otherwise. This keeps the search-oriented P=16 default for normal large data
+while avoiding its 512 KiB directory on indexes that are guaranteed to be
+smaller with P=8. An explicit value always takes precedence.
+
 This writes:
 
 ```sh
@@ -223,15 +237,15 @@ qbix check reads.bam
 qbix check --quick reads.bam
 ```
 
-`check` defaults to `--quick`. Use `--full` to also seek to every indexed record
-and verify its read-name hash:
+`check` defaults to `--quick`. Use `--full` to validate complete QBI2 directory
+and suffix ordering, seek to every indexed record, and verify its read-name hash:
 
 ```sh
 qbix check --full reads.bam
 ```
 
-Print records-per-read-name statistics from the index. `stat` is accepted as an
-alias for `stats`:
+Print records-per-hash statistics and QBI1/QBI2 size estimates from the index.
+`stat` is accepted as an alias for `stats`:
 
 ```sh
 qbix stats reads.bam

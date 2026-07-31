@@ -83,7 +83,7 @@ scan BAM once
 finish
   flush all bucket staging buffers
   create final tmp next to output index
-  write QBI1 header with total record count
+  initialize the selected QBI1 or QBI2 sorted-record sink
 
   for chunks of up to sort_threads buckets in ascending prefix order:
     read and sort buckets in the chunk in parallel
@@ -121,8 +121,10 @@ than 1, buckets are still written to the final index in prefix order.
 
 This preserves the invariant required by:
 
-- `Index::range_indices()`, which binary-searches by `qhash`
-- `stats`, which scans run lengths of equal `qhash`
+- QBI1 binary search over full `(qhash, virtual_offset)` rows
+- QBI2 streaming generation of radix, suffix, group, rank, and offset sections
+- sequential logical-record and hash-group iteration used by `show`, `check`,
+  and `stats`
 
 `file_offset` is a BGZF virtual offset and is expected to be unique per BAM
 record, so `(qhash, file_offset)` is a total ordering.  `sort_unstable_by` is
@@ -204,7 +206,12 @@ bucket splitting.
 
 ```sh
 qbix index --memory 512M --bucket-bits 8 --temp-dir DIR reads.bam
+qbix index --index-format qbi2 --qbi2-radix-bits 16 reads.bam
 ```
+
+For QBI2, omitting `--qbi2-radix-bits` (or specifying `auto`) selects P=8 when
+the BAM has at most 522,240 records and P=16 otherwise. Explicit `8` and `16`
+values override this conservative automatic choice.
 
 `--memory` accepts integer values with optional `K`, `M`, or `G` suffixes.
 
@@ -224,6 +231,8 @@ pub struct BuildOptions {
     pub bucket_bits: Option<u8>,
     pub sort_threads: Option<usize>,
     pub temp_dir: Option<PathBuf>,
+    pub index_format: Option<IndexFormat>,
+    pub qbi2_radix_bits: Option<u8>,
 }
 ```
 
@@ -233,6 +242,8 @@ pub struct BuildOptions {
 - `bucket_bits`: 8
 - `sort_threads`: 1
 - `temp_dir`: output index directory
+- `index_format`: QBI1
+- `qbi2_radix_bits`: automatic (P=8 for at most 522,240 records, otherwise P=16)
 
 `BuildOptions`, `LookupOptions`, and `CheckOptions` are `#[non_exhaustive]`.
 External users should start from `Default` and then assign fields:
@@ -242,6 +253,7 @@ let mut options = qbix::BuildOptions::default();
 options.bucket_bits = Some(12);
 options.memory_limit = Some(1024 * 1024 * 1024);
 options.sort_threads = Some(4);
+options.index_format = Some(qbix::IndexFormat::Qbi2);
 ```
 
 ## C API

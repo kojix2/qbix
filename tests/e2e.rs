@@ -1,7 +1,7 @@
 mod common;
 
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 
 use common::{write_unmapped_bam, TempDir};
@@ -98,12 +98,125 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
     );
     let json_stdout = String::from_utf8(json_stats.stdout).unwrap();
     assert!(json_stdout.contains("\"format\": \"QBI1\""));
+    assert!(json_stdout.contains("\"qbi2_radix_bits\": null"));
     assert!(json_stdout.contains("\"records\": 4"));
     assert!(json_stdout.contains("\"distinct_qname_hashes\": 3"));
     assert!(json_stdout.contains("\"singletons\": 2"));
     assert!(json_stdout.contains("\"pairs\": 1"));
     assert!(json_stdout.contains("\"multi_or_supplementary\": 0"));
     assert!(json_stdout.contains("\"max\": 2"));
+    assert!(json_stdout.contains("\"qbi1\": 112"));
+    assert!(json_stdout.contains("\"qbi2_p8\": 2261"));
+    assert!(json_stdout.contains("\"qbi2_p16\": 524498"));
+    assert!(json_stdout.contains("\"smallest_qbi2_radix_bits\": 8"));
+}
+
+#[test]
+fn qbi2_matches_qbi1_cli_behavior() {
+    let temp = TempDir::new("qbi2-e2e");
+    let bam = temp.path().join("reads.bam");
+    let qbi1 = temp.path().join("reads.qbi1");
+    let qbi2 = temp.path().join("reads.qbi2");
+    let qbi2_p16 = temp.path().join("reads-p16.qbi2");
+    let bam = bam.to_str().unwrap();
+    let qbi1 = qbi1.to_str().unwrap();
+    let qbi2 = qbi2.to_str().unwrap();
+    let qbi2_p16 = qbi2_p16.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_b", "read_a", "read_a", "read_c"]);
+
+    assert_success(Command::new(qbix()).args(["index", "--index-format", "qbi1", "-i", qbi1, bam]));
+    assert_success(Command::new(qbix()).args(["index", "--index-format", "qbi2", "-i", qbi2, bam]));
+    assert_success(Command::new(qbix()).args([
+        "index",
+        "--index-format",
+        "qbi2",
+        "--qbi2-radix-bits",
+        "16",
+        "-i",
+        qbi2_p16,
+        bam,
+    ]));
+    assert_eq!(fs::metadata(qbi1).unwrap().len(), 112);
+    assert_eq!(fs::metadata(qbi2).unwrap().len(), 2_261);
+    assert_eq!(fs::read(qbi2).unwrap()[8], 8);
+    assert_eq!(fs::metadata(qbi2_p16).unwrap().len(), 524_498);
+    assert_eq!(fs::read(qbi2_p16).unwrap()[8], 16);
+
+    let qbi1_show = Command::new(qbix()).args(["show", qbi1]).output().unwrap();
+    let qbi2_show = Command::new(qbix()).args(["show", qbi2]).output().unwrap();
+    assert!(qbi1_show.status.success());
+    assert!(qbi2_show.status.success());
+    assert_eq!(qbi2_show.stdout, qbi1_show.stdout);
+
+    for index in [qbi1, qbi2] {
+        assert_success(Command::new(qbix()).args(["check", "--full", "-i", index, bam]));
+    }
+    let get = Command::new(qbix())
+        .args(["get", "-i", qbi2, bam, "read_a", "read_c"])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_a", "read_a", "read_c"]);
+
+    let stats = Command::new(qbix())
+        .args(["stats", "--json", "-i", qbi2, bam])
+        .output()
+        .unwrap();
+    assert!(stats.status.success());
+    let stats = String::from_utf8_lossy(&stats.stdout);
+    assert!(stats.contains("\"format\": \"QBI2\""));
+    assert!(stats.contains("\"qbi2_radix_bits\": 8"));
+}
+
+#[test]
+fn qbi2_full_check_performs_deferred_directory_validation() {
+    let temp = TempDir::new("qbi2-deferred-check");
+    let bam = temp.path().join("reads.bam");
+    let index = temp.path().join("reads.qbi");
+    let names = (0..600)
+        .map(|index| format!("read_{index:04}"))
+        .collect::<Vec<_>>();
+    let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    write_unmapped_bam(bam.to_str().unwrap(), &name_refs);
+    assert_success(Command::new(qbix()).args([
+        "index",
+        "--index-format",
+        "qbi2",
+        "-i",
+        index.to_str().unwrap(),
+        bam.to_str().unwrap(),
+    ]));
+
+    let bytes = fs::read(&index).unwrap();
+    let rank_offset = u64::from_le_bytes(bytes[80..88].try_into().unwrap());
+    let mut file = fs::OpenOptions::new().write(true).open(&index).unwrap();
+    file.seek(SeekFrom::Start(rank_offset + 8)).unwrap();
+    file.write_all(&999u64.to_le_bytes()).unwrap();
+    drop(file);
+
+    assert_success(Command::new(qbix()).args([
+        "check",
+        "--quick",
+        "-i",
+        index.to_str().unwrap(),
+        bam.to_str().unwrap(),
+    ]));
+    let full = Command::new(qbix())
+        .args([
+            "check",
+            "--full",
+            "-i",
+            index.to_str().unwrap(),
+            bam.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!full.status.success());
+    assert!(String::from_utf8_lossy(&full.stderr).contains("rank directory"));
 }
 
 #[test]

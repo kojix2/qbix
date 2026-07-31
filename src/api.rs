@@ -8,6 +8,8 @@ use crate::index::{
     DEFAULT_SORT_THREADS,
 };
 
+pub use crate::index::IndexFormat;
+
 /// Options used when building a `.qbi` index.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -19,6 +21,10 @@ pub struct BuildOptions {
     pub bucket_bits: Option<u8>,
     pub sort_threads: Option<usize>,
     pub temp_dir: Option<PathBuf>,
+    pub index_format: Option<IndexFormat>,
+    /// QBI2 radix width. `None` selects P=8 for at most 522,240 records and
+    /// P=16 otherwise.
+    pub qbi2_radix_bits: Option<u8>,
 }
 
 impl Default for BuildOptions {
@@ -31,6 +37,8 @@ impl Default for BuildOptions {
             bucket_bits: None,
             sort_threads: None,
             temp_dir: None,
+            index_format: None,
+            qbi2_radix_bits: None,
         }
     }
 }
@@ -130,6 +138,8 @@ where
             bucket_bits: options.bucket_bits.unwrap_or(DEFAULT_BUCKET_BITS),
             sort_threads: options.sort_threads.unwrap_or(DEFAULT_SORT_THREADS),
             temp_dir: temp_dir.as_deref(),
+            index_format: options.index_format.unwrap_or(IndexFormat::Qbi1),
+            qbi2_radix_bits: options.qbi2_radix_bits,
         },
     )
     .map_err(Error::from)?;
@@ -141,7 +151,8 @@ where
 /// Check that a `.qbi` index matches its BAM.
 ///
 /// [`CheckMode::Quick`] checks BAM size, mtime, and header hash. [`CheckMode::Full`]
-/// additionally seeks to every indexed record and verifies its read-name hash.
+/// additionally validates all index sections, then seeks to every indexed
+/// record and verifies its read-name hash.
 pub fn check_index<P>(input_bam: P, options: CheckOptions) -> Result<()>
 where
     P: AsRef<Path>,
@@ -176,8 +187,8 @@ where
     let input_index = path_to_str(input_index.as_ref(), "index path")?;
     let index = Index::load(None, Some(input_index), None).map_err(Error::from)?;
     let mut records = Vec::with_capacity(index.record_count());
-    for idx in 0..index.record_count() {
-        let record = index.record(idx).map_err(Error::from)?;
+    for record in index.iter_records() {
+        let record = record.map_err(Error::from)?;
         records.push(IndexRecord {
             qhash: record.qhash,
             virtual_offset: VirtualOffset(record.file_offset),
@@ -280,9 +291,12 @@ impl IndexedBam {
     /// [`IndexedBam::lookup_offsets`] unless raw candidates are specifically needed.
     pub fn lookup_offsets_unverified(&self, read_name: &str) -> Result<Vec<VirtualOffset>> {
         let mut offsets = Vec::new();
-        for idx in self.index.range_indices(read_name).map_err(Error::from)? {
-            let record = self.index.record(idx).map_err(Error::from)?;
-            offsets.push(VirtualOffset(record.file_offset));
+        for offset in self
+            .index
+            .candidate_offsets(read_name)
+            .map_err(Error::from)?
+        {
+            offsets.push(VirtualOffset(offset.map_err(Error::from)?));
         }
         Ok(offsets)
     }
@@ -330,9 +344,12 @@ impl IndexedBam {
 
         for read_name in read_names {
             let read_name = read_name.as_ref();
-            for idx in self.index.range_indices(read_name).map_err(Error::from)? {
-                let record = self.index.record(idx).map_err(Error::from)?;
-                hits.push((read_name, record.file_offset));
+            for offset in self
+                .index
+                .candidate_offsets(read_name)
+                .map_err(Error::from)?
+            {
+                hits.push((read_name, offset.map_err(Error::from)?));
             }
         }
         if order == OutputOrder::Bam {

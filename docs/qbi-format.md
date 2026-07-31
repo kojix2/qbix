@@ -1,7 +1,9 @@
 # QBI File Format
 
 This document describes the on-disk `.qbi` index format written by `qbix`.
-The current format is identified by the magic bytes `QBI1`.
+The stable format is identified by the magic bytes `QBI1`. The experimental
+grouped format is documented in [qbi2-format.md](qbi2-format.md). Current
+readers accept both formats, while QBI1 remains the default output.
 
 `.qbi` indexes are lookup tables for BAM records by read name. They store a
 64-bit hash of each BAM record `QNAME` and the BGZF virtual offset of that

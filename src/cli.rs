@@ -1,8 +1,8 @@
 use crate::commands::{self, CheckMode, ColorMode, GetOrder, OutputFormat, StatsFormat};
 use crate::error::Result;
 use crate::index::{
-    DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, DEFAULT_SORT_THREADS, MAX_BUCKET_BITS,
-    MIN_BUCKET_BITS,
+    IndexFormat, DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, DEFAULT_SORT_THREADS,
+    MAX_BUCKET_BITS, MIN_BUCKET_BITS,
 };
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
@@ -25,6 +25,8 @@ const ARG_MEMORY: &str = "memory";
 const ARG_BUCKET_BITS: &str = "bucket_bits";
 const ARG_SORT_THREADS: &str = "sort_threads";
 const ARG_TEMP_DIR: &str = "temp_dir";
+const ARG_INDEX_FORMAT: &str = "index_format";
+const ARG_QBI2_RADIX_BITS: &str = "qbi2_radix_bits";
 const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
@@ -68,6 +70,8 @@ where
             bucket_bits,
             sort_threads,
             temp_dir,
+            index_format,
+            qbi2_radix_bits,
         } => commands::build_index(
             &input_bam,
             commands::BuildIndexOptions {
@@ -78,6 +82,8 @@ where
                 bucket_bits,
                 sort_threads,
                 temp_dir: temp_dir.as_deref(),
+                index_format,
+                qbi2_radix_bits,
             },
         ),
         Action::Get(action) => run_get(action),
@@ -148,6 +154,8 @@ enum Action {
         bucket_bits: u8,
         sort_threads: usize,
         temp_dir: Option<String>,
+        index_format: IndexFormat,
+        qbi2_radix_bits: Option<u8>,
     },
     Get(GetAction),
     Show {
@@ -195,6 +203,8 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             bucket_bits: bucket_bits(matches)?,
             sort_threads: sort_threads(matches)?,
             temp_dir: optional_string(matches, ARG_TEMP_DIR),
+            index_format: index_format(matches)?,
+            qbi2_radix_bits: qbi2_radix_bits(matches)?,
         }),
         Some((COMMAND_GET, matches)) => Ok(Action::Get(GetAction {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
@@ -254,6 +264,8 @@ fn index_command() -> Command {
         .arg(bucket_bits_arg())
         .arg(sort_threads_arg())
         .arg(temp_dir_arg())
+        .arg(index_format_arg())
+        .arg(qbi2_radix_bits_arg())
         .arg(verbose_arg())
         .arg(input_bam_arg())
 }
@@ -541,6 +553,46 @@ fn temp_dir_arg() -> Arg {
         .help("Directory for bucket temporary files")
 }
 
+fn index_format_arg() -> Arg {
+    Arg::new(ARG_INDEX_FORMAT)
+        .long("index-format")
+        .value_name("qbi1|qbi2")
+        .default_value("qbi1")
+        .help("Index format (QBI2 is experimental)")
+}
+
+fn qbi2_radix_bits_arg() -> Arg {
+    Arg::new(ARG_QBI2_RADIX_BITS)
+        .long("qbi2-radix-bits")
+        .value_name("auto|8|16")
+        .help("QBI2 radix prefix width; default selects 8 for small indexes, otherwise 16")
+}
+
+fn qbi2_radix_bits(matches: &ArgMatches) -> Result<Option<u8>> {
+    let Some(value) = matches.get_one::<String>(ARG_QBI2_RADIX_BITS) else {
+        return Ok(None);
+    };
+    match value {
+        value if value.eq_ignore_ascii_case("auto") => Ok(None),
+        value if value == "8" => Ok(Some(8)),
+        value if value == "16" => Ok(Some(16)),
+        _ => Err("[qbix] QBI2 radix bits must be auto, 8, or 16".to_string()),
+    }
+}
+
+fn index_format(matches: &ArgMatches) -> Result<IndexFormat> {
+    match required_string(matches, ARG_INDEX_FORMAT)?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "qbi1" => Ok(IndexFormat::Qbi1),
+        "qbi2" => Ok(IndexFormat::Qbi2),
+        value => Err(format!(
+            "[qbix] unsupported index format: {value}; expected qbi1 or qbi2"
+        )),
+    }
+}
+
 fn verbose_arg() -> Arg {
     Arg::new(ARG_VERBOSE)
         .short('v')
@@ -779,6 +831,8 @@ mod tests {
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
+                index_format: IndexFormat::Qbi1,
+                qbi2_radix_bits: None,
             }
         );
     }
@@ -811,8 +865,48 @@ mod tests {
                 bucket_bits: 10,
                 sort_threads: 3,
                 temp_dir: Some("tmp".to_string()),
+                index_format: IndexFormat::Qbi1,
+                qbi2_radix_bits: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_experimental_qbi2_format() {
+        let action = parse_args(strings([
+            "qbix",
+            "index",
+            "--index-format",
+            "qbi2",
+            "reads.bam",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            action,
+            Action::Index {
+                index_format: IndexFormat::Qbi2,
+                qbi2_radix_bits: None,
+                ..
+            }
+        ));
+
+        let action = parse_args(strings([
+            "qbix",
+            "index",
+            "--index-format",
+            "qbi2",
+            "--qbi2-radix-bits",
+            "8",
+            "reads.bam",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            action,
+            Action::Index {
+                qbi2_radix_bits: Some(8),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -971,6 +1065,8 @@ mod tests {
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
+                index_format: IndexFormat::Qbi1,
+                qbi2_radix_bits: None,
             }
         );
     }

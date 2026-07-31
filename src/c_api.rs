@@ -9,7 +9,9 @@ use std::ptr;
 
 use crate::api::{IndexedBam, LookupOptions};
 use crate::commands;
-use crate::index::{DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, DEFAULT_SORT_THREADS};
+use crate::index::{
+    IndexFormat, DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT, DEFAULT_SORT_THREADS,
+};
 
 const QBIX_OK: c_int = 0;
 const QBIX_ERR: c_int = -1;
@@ -53,6 +55,8 @@ pub extern "C" fn qbix_build_index(
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
+                index_format: IndexFormat::Qbi1,
+                qbi2_radix_bits: None,
             },
         )
     })

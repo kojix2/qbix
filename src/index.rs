@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
+#[cfg(test)]
+use std::io::BufWriter;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -8,9 +10,21 @@ use crate::error::Result;
 use memmap2::Mmap;
 use xxhash_rust::xxh3::xxh3_64;
 
+mod qbi2;
+
+#[cfg(test)]
+#[path = "index_tests.rs"]
+mod tests;
+
+use qbi2::{MappedQbi2, Qbi2GroupIter, Qbi2Writer, QBI2_MAGIC};
+
+#[cfg(test)]
+#[path = "index_bench.rs"]
+mod benchmarks;
+
 const INDEX_IO_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 const BUCKET_STAGING_BUFFER_SIZE: usize = 64 * 1024;
-const MAGIC: &[u8; 4] = b"QBI1";
+const QBI1_MAGIC: &[u8; 4] = b"QBI1";
 const HEADER_SIZE: u16 = 48;
 const RECORD_SIZE: u16 = 16;
 const RECORD_SIZE_BYTES: usize = 16;
@@ -23,11 +37,62 @@ const BAM_MTIME_OFFSET: usize = 32;
 const BAM_HEADER_HASH_OFFSET: usize = 40;
 const RECORD_QHASH_OFFSET: usize = 0;
 const RECORD_FILE_OFFSET: usize = 8;
+const SECTION_IO_BUFFER_SIZE: usize = 64 * 1024;
 pub(crate) const DEFAULT_INDEX_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 pub(crate) const DEFAULT_BUCKET_BITS: u8 = 8;
 pub(crate) const DEFAULT_SORT_THREADS: usize = 1;
 pub(crate) const MIN_BUCKET_BITS: u8 = 1;
 pub(crate) const MAX_BUCKET_BITS: u8 = 12;
+// P=16 spends 522,240 extra directory bytes and saves exactly one byte per
+// distinct hash, so K=522,240 is the exact size crossover against P=8.
+pub(crate) const QBI2_RADIX_SIZE_CROSSOVER: usize = 522_240;
+
+pub(crate) fn estimated_qbi1_size(record_count: usize) -> Result<u64> {
+    u64::from(HEADER_SIZE)
+        .checked_add(
+            u64::try_from(record_count)
+                .map_err(|_| "[qbix] record count is too large".to_string())?
+                .checked_mul(u64::from(RECORD_SIZE))
+                .ok_or_else(|| "[qbix] estimated QBI1 size overflow".to_string())?,
+        )
+        .ok_or_else(|| "[qbix] estimated QBI1 size overflow".to_string())
+}
+
+pub(crate) fn estimated_qbi2_size(
+    record_count: usize,
+    unique_hash_count: usize,
+    radix_bits: u8,
+) -> Result<u64> {
+    qbi2::estimated_size(record_count, unique_hash_count, radix_bits)
+}
+
+pub(crate) fn resolve_qbi2_radix_bits(requested: Option<u8>, record_count: usize) -> u8 {
+    // K is unavailable until sorted output has already started. Since K <= N,
+    // small N guarantees P=8 is smaller; larger indexes keep the faster P=16.
+    requested.unwrap_or({
+        if record_count <= QBI2_RADIX_SIZE_CROSSOVER {
+            8
+        } else {
+            16
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IndexFormat {
+    #[default]
+    Qbi1,
+    Qbi2,
+}
+
+impl IndexFormat {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Qbi1 => "QBI1",
+            Self::Qbi2 => "QBI2",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BamMetadata {
@@ -68,7 +133,7 @@ impl BamMetadata {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Record {
     pub(crate) qhash: u64,
     pub(crate) file_offset: i64,
@@ -92,36 +157,31 @@ enum IndexStorage {
 }
 
 #[derive(Debug)]
-struct MappedIndex {
+enum MappedIndex {
+    Qbi1(MappedQbi1),
+    Qbi2(MappedQbi2),
+}
+
+#[derive(Debug)]
+struct MappedQbi1 {
     mmap: Mmap,
     record_start: usize,
     record_count: usize,
     bam_metadata: BamMetadata,
 }
 
-#[derive(Clone, Copy)]
-struct RawDiskRecord {
-    qhash: u64,
-    file_offset: i64,
-}
-
-#[cfg(test)]
-struct OwnedIndexMut<'a> {
-    records: &'a mut Vec<Record>,
-}
-
 #[cfg(test)]
 impl IndexStorage {
-    fn owned_mut(&mut self) -> Result<OwnedIndexMut<'_>> {
+    fn owned_mut(&mut self) -> Result<&mut Vec<Record>> {
         match self {
-            Self::Owned { records } => Ok(OwnedIndexMut { records }),
+            Self::Owned { records } => Ok(records),
             Self::Mapped(_) => Err("[qbix] cannot modify a memory-mapped index".to_string()),
         }
     }
 }
 
-impl MappedIndex {
-    fn raw_record(&self, index: usize) -> Result<RawDiskRecord> {
+impl MappedQbi1 {
+    fn record(&self, index: usize) -> Result<Record> {
         if index >= self.record_count {
             return Err("[qbix] corrupt index: record offset is out of range".to_string());
         }
@@ -134,15 +194,7 @@ impl MappedIndex {
             &self.mmap[offset + RECORD_FILE_OFFSET..offset + 16],
             "index records",
         )?;
-        Ok(RawDiskRecord { qhash, file_offset })
-    }
-
-    fn record(&self, index: usize) -> Result<Record> {
-        let raw = self.raw_record(index)?;
-        Ok(Record {
-            qhash: raw.qhash,
-            file_offset: raw.file_offset,
-        })
+        Ok(Record { qhash, file_offset })
     }
 }
 
@@ -167,7 +219,7 @@ impl Index {
             return Err("[qbix] cannot index a negative BGZF offset".to_string());
         }
         let owned = self.storage.owned_mut()?;
-        owned.records.push(Record {
+        owned.push(Record {
             qhash: qname_hash64(readname.as_bytes()),
             file_offset,
         });
@@ -177,14 +229,14 @@ impl Index {
     #[cfg(test)]
     pub(crate) fn save(&mut self, filename: &str, bam_metadata: BamMetadata) -> Result<()> {
         let owned = self.storage.owned_mut()?;
-        owned.records.sort_unstable_by(Record::cmp_key);
+        owned.sort_unstable_by(Record::cmp_key);
 
         let file = File::create(filename)
             .map_err(|e| format!("[qbix] could not open index for writing '{filename}': {e}"))?;
         let mut fp = BufWriter::with_capacity(INDEX_IO_BUFFER_SIZE, file);
-        write_header(&mut fp, owned.records.len(), bam_metadata)?;
+        write_header(&mut fp, owned.len(), bam_metadata)?;
 
-        for record in owned.records.iter() {
+        for record in owned.iter() {
             write_record(&mut fp, *record)?;
         }
         fp.flush()
@@ -202,17 +254,22 @@ impl Index {
             .map_err(|_| format!("[qbix] index file not found: {index_fn}"))?;
         let mmap = unsafe { Mmap::map(&file) }
             .map_err(|e| format!("[qbix] could not mmap index '{index_fn}': {e}"))?;
-        if mmap.len() < usize::from(HEADER_SIZE) {
+        if mmap.len() < 4 {
             return Err("[qbix] corrupt index: file is shorter than header".to_string());
         }
-        if &mmap[..4] != MAGIC {
-            return Err("[qbix] unsupported index format: expected QBI1".to_string());
+        if &mmap[..4] == QBI1_MAGIC {
+            Self::load_qbi1(mmap, expected_bam_metadata)
+        } else if &mmap[..4] == QBI2_MAGIC {
+            Self::load_qbi2(mmap, expected_bam_metadata)
+        } else {
+            Err("[qbix] unsupported index format: expected QBI1 or QBI2".to_string())
         }
-
-        Self::load_mapped(mmap, expected_bam_metadata)
     }
 
-    fn load_mapped(mmap: Mmap, expected_bam_metadata: Option<BamMetadata>) -> Result<Self> {
+    fn load_qbi1(mmap: Mmap, expected_bam_metadata: Option<BamMetadata>) -> Result<Self> {
+        if mmap.len() < usize::from(HEADER_SIZE) {
+            return Err("[qbix] corrupt index: file is shorter than header (QBI1)".to_string());
+        }
         let header_size =
             read_u16_le_from(&mmap[HEADER_SIZE_OFFSET..RECORD_SIZE_OFFSET], "header size")?;
         if header_size != HEADER_SIZE {
@@ -260,20 +317,53 @@ impl Index {
         }
 
         Ok(Self {
-            storage: IndexStorage::Mapped(MappedIndex {
+            storage: IndexStorage::Mapped(MappedIndex::Qbi1(MappedQbi1 {
                 mmap,
                 record_start,
                 record_count,
                 bam_metadata,
-            }),
+            })),
         })
+    }
+
+    fn load_qbi2(mmap: Mmap, expected_bam_metadata: Option<BamMetadata>) -> Result<Self> {
+        let mapped = MappedQbi2::load(mmap, expected_bam_metadata)?;
+        Ok(Self {
+            storage: IndexStorage::Mapped(MappedIndex::Qbi2(mapped)),
+        })
+    }
+
+    pub(crate) fn format(&self) -> IndexFormat {
+        match &self.storage {
+            #[cfg(test)]
+            IndexStorage::Owned { .. } => IndexFormat::Qbi1,
+            IndexStorage::Mapped(MappedIndex::Qbi1(_)) => IndexFormat::Qbi1,
+            IndexStorage::Mapped(MappedIndex::Qbi2(_)) => IndexFormat::Qbi2,
+        }
+    }
+
+    pub(crate) fn qbi2_radix_bits(&self) -> Option<u8> {
+        match &self.storage {
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => Some(mapped.radix_bits()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn validate_full_structure(&self) -> Result<()> {
+        match &self.storage {
+            #[cfg(test)]
+            IndexStorage::Owned { .. } => Ok(()),
+            IndexStorage::Mapped(MappedIndex::Qbi1(_)) => Ok(()),
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => mapped.validate_full(),
+        }
     }
 
     pub(crate) fn record_count(&self) -> usize {
         match &self.storage {
             #[cfg(test)]
             IndexStorage::Owned { records, .. } => records.len(),
-            IndexStorage::Mapped(mapped) => mapped.record_count,
+            IndexStorage::Mapped(MappedIndex::Qbi1(mapped)) => mapped.record_count,
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => mapped.record_count,
         }
     }
 
@@ -281,7 +371,8 @@ impl Index {
         match &self.storage {
             #[cfg(test)]
             IndexStorage::Owned { .. } => None,
-            IndexStorage::Mapped(mapped) => Some(mapped.bam_metadata),
+            IndexStorage::Mapped(MappedIndex::Qbi1(mapped)) => Some(mapped.bam_metadata),
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => Some(mapped.bam_metadata),
         }
     }
 
@@ -292,12 +383,15 @@ impl Index {
                 .get(index)
                 .copied()
                 .ok_or_else(|| "[qbix] corrupt index: record offset is out of range".to_string()),
-            IndexStorage::Mapped(mapped) => mapped.record(index),
+            IndexStorage::Mapped(MappedIndex::Qbi1(mapped)) => mapped.record(index),
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => mapped.record(index),
         }
     }
 
-    pub(crate) fn range_indices(&self, readname: &str) -> Result<std::ops::Range<usize>> {
-        let qhash = qname_hash64(readname.as_bytes());
+    fn range_for_hash(&self, qhash: u64) -> Result<std::ops::Range<usize>> {
+        if let IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) = &self.storage {
+            return mapped.candidate_range(qhash);
+        }
         let mut lo = 0usize;
         let mut hi = self.record_count();
         while lo < hi {
@@ -319,6 +413,172 @@ impl Index {
         }
         Ok(start..lo)
     }
+
+    pub(crate) fn candidate_offsets<'a>(
+        &'a self,
+        readname: &str,
+    ) -> Result<CandidateOffsetIter<'a>> {
+        self.candidate_offsets_for_hash(qname_hash64(readname.as_bytes()))
+    }
+
+    fn candidate_offsets_for_hash(&self, qhash: u64) -> Result<CandidateOffsetIter<'_>> {
+        let range = self.range_for_hash(qhash)?;
+        Ok(CandidateOffsetIter {
+            index: self,
+            next: range.start,
+            end: range.end,
+        })
+    }
+
+    pub(crate) fn iter_records(&self) -> IndexRecordIter<'_> {
+        let qbi2_groups = match &self.storage {
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => Some(mapped.iter_groups()),
+            _ => None,
+        };
+        IndexRecordIter {
+            index: self,
+            position: 0,
+            group_end: 0,
+            qhash: 0,
+            qbi2_groups,
+            failed: false,
+        }
+    }
+
+    pub(crate) fn iter_hash_groups(&self) -> HashGroupIter<'_> {
+        let qbi2_groups = match &self.storage {
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => Some(mapped.iter_groups()),
+            _ => None,
+        };
+        HashGroupIter {
+            index: self,
+            position: 0,
+            qbi2_groups,
+        }
+    }
+}
+
+pub(crate) struct IndexRecordIter<'a> {
+    index: &'a Index,
+    position: usize,
+    group_end: usize,
+    qhash: u64,
+    qbi2_groups: Option<Qbi2GroupIter<'a>>,
+    failed: bool,
+}
+
+impl Iterator for IndexRecordIter<'_> {
+    type Item = Result<Record>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed || self.position >= self.index.record_count() {
+            return None;
+        }
+        if let Some(groups) = &mut self.qbi2_groups {
+            if self.position == self.group_end {
+                let group = match groups.next() {
+                    Some(Ok(group)) => group,
+                    Some(Err(error)) => {
+                        self.failed = true;
+                        return Some(Err(error));
+                    }
+                    None => {
+                        self.failed = true;
+                        return Some(Err(
+                            "[qbix] corrupt QBI2 index: hash group is missing".to_string()
+                        ));
+                    }
+                };
+                if group.start != self.position {
+                    self.failed = true;
+                    return Some(Err(
+                        "[qbix] corrupt QBI2 index: noncontiguous hash group".to_string()
+                    ));
+                }
+                self.group_end = group.end;
+                self.qhash = group.qhash;
+            }
+            let IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) = &self.index.storage else {
+                unreachable!("QBI2 group iterator requires QBI2 storage");
+            };
+            let file_offset = match mapped.offset(self.position) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            };
+            self.position += 1;
+            return Some(Ok(Record {
+                qhash: self.qhash,
+                file_offset,
+            }));
+        }
+        let result = self.index.record(self.position);
+        self.position += 1;
+        Some(result)
+    }
+}
+
+pub(crate) struct HashGroupIter<'a> {
+    index: &'a Index,
+    position: usize,
+    qbi2_groups: Option<Qbi2GroupIter<'a>>,
+}
+
+impl Iterator for HashGroupIter<'_> {
+    type Item = Result<(u64, usize)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(groups) = &mut self.qbi2_groups {
+            return groups
+                .next()
+                .map(|result| result.map(|group| (group.qhash, group.end - group.start)));
+        }
+        if self.position >= self.index.record_count() {
+            return None;
+        }
+        Some((|| {
+            let qhash = self.index.record(self.position)?.qhash;
+            let start = self.position;
+            self.position += 1;
+            while self.position < self.index.record_count()
+                && self.index.record(self.position)?.qhash == qhash
+            {
+                self.position += 1;
+            }
+            Ok((qhash, self.position - start))
+        })())
+    }
+}
+
+pub(crate) struct CandidateOffsetIter<'a> {
+    index: &'a Index,
+    next: usize,
+    end: usize,
+}
+
+impl Iterator for CandidateOffsetIter<'_> {
+    type Item = Result<i64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == self.end {
+            return None;
+        }
+        let index = self.next;
+        self.next += 1;
+        Some(match &self.index.storage {
+            #[cfg(test)]
+            IndexStorage::Owned { records } => records
+                .get(index)
+                .map(|record| record.file_offset)
+                .ok_or_else(|| "[qbix] corrupt index: record offset is out of range".to_string()),
+            IndexStorage::Mapped(MappedIndex::Qbi1(mapped)) => {
+                mapped.record(index).map(|record| record.file_offset)
+            }
+            IndexStorage::Mapped(MappedIndex::Qbi2(mapped)) => mapped.offset(index),
+        })
+    }
 }
 
 pub(crate) struct BucketIndexBuilder {
@@ -330,15 +590,57 @@ pub(crate) struct BucketIndexBuilder {
     output_path: PathBuf,
     final_tmp_path: PathBuf,
     guard: TempGuard,
+    format: IndexFormat,
+    qbi2_radix_bits: Option<u8>,
 }
 
 impl BucketIndexBuilder {
+    #[cfg(test)]
     pub(crate) fn new(
         output_index: &str,
         memory_limit: usize,
         bucket_bits: u8,
         sort_threads: usize,
         temp_dir: Option<&str>,
+    ) -> Result<Self> {
+        Self::new_with_format(
+            output_index,
+            memory_limit,
+            bucket_bits,
+            sort_threads,
+            temp_dir,
+            IndexFormat::Qbi1,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_format(
+        output_index: &str,
+        memory_limit: usize,
+        bucket_bits: u8,
+        sort_threads: usize,
+        temp_dir: Option<&str>,
+        format: IndexFormat,
+    ) -> Result<Self> {
+        Self::new_with_format_and_radix(
+            output_index,
+            memory_limit,
+            bucket_bits,
+            sort_threads,
+            temp_dir,
+            format,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_format_and_radix(
+        output_index: &str,
+        memory_limit: usize,
+        bucket_bits: u8,
+        sort_threads: usize,
+        temp_dir: Option<&str>,
+        format: IndexFormat,
+        qbi2_radix_bits: Option<u8>,
     ) -> Result<Self> {
         if memory_limit < usize::from(RECORD_SIZE) {
             return Err("[qbix] memory limit must be at least 16 bytes".to_string());
@@ -347,6 +649,11 @@ impl BucketIndexBuilder {
             return Err("[qbix] sort threads must be a positive integer".to_string());
         }
         validate_bucket_bits(bucket_bits)?;
+        if format == IndexFormat::Qbi2
+            && qbi2_radix_bits.is_some_and(|bits| !matches!(bits, 8 | 16))
+        {
+            return Err("[qbix] QBI2 radix bits must be 8 or 16".to_string());
+        }
 
         let output_path = PathBuf::from(output_index);
         let output_dir = output_path.parent().unwrap_or_else(|| Path::new("."));
@@ -386,6 +693,8 @@ impl BucketIndexBuilder {
             output_path,
             final_tmp_path,
             guard,
+            format,
+            qbi2_radix_bits,
         })
     }
 
@@ -436,14 +745,20 @@ impl BucketIndexBuilder {
                 .map_err(|e| format!("[qbix] could not flush bucket temp file: {e}"))?;
         }
 
-        let file = File::create(&self.final_tmp_path).map_err(|e| {
+        let mut file = File::create(&self.final_tmp_path).map_err(|e| {
             format!(
                 "[qbix] could not open temporary index for writing '{}': {e}",
                 self.final_tmp_path.display()
             )
         })?;
-        let mut out = BufWriter::with_capacity(INDEX_IO_BUFFER_SIZE, file);
-        write_header(&mut out, self.total_records, bam_metadata)?;
+        let qbi2_radix_bits = resolve_qbi2_radix_bits(self.qbi2_radix_bits, self.total_records);
+        let mut sink = SortedRecordSink::new(
+            self.format,
+            qbi2_radix_bits,
+            &mut file,
+            self.total_records,
+            bam_metadata,
+        )?;
 
         let sort_threads = self.sort_threads.min(self.buckets.len()).max(1);
         let memory_limit = self.memory_limit;
@@ -466,7 +781,7 @@ impl BucketIndexBuilder {
 
             for (bucket, records) in bucket_chunk.iter().zip(sorted_buckets) {
                 for record in records {
-                    write_record(&mut out, record)?;
+                    sink.push(&mut file, record)?;
                 }
                 if bucket.bytes > 0 {
                     let _ = std::fs::remove_file(&bucket.path);
@@ -474,13 +789,13 @@ impl BucketIndexBuilder {
             }
         }
 
-        out.flush().map_err(|e| {
+        sink.finish(&mut file).map_err(|e| {
             format!(
                 "[qbix] could not close temporary index '{}': {e}",
                 self.final_tmp_path.display()
             )
         })?;
-        drop(out);
+        drop(file);
         std::fs::rename(&self.final_tmp_path, &self.output_path).map_err(|e| {
             format!(
                 "[qbix] could not rename temporary index '{}' to '{}': {e}",
@@ -722,13 +1037,125 @@ fn temp_unique_suffix() -> String {
     format!("{}-{now}", std::process::id())
 }
 
+enum SortedRecordSink {
+    Qbi1(Qbi1Writer),
+    Qbi2(Box<Qbi2Writer>),
+}
+
+impl SortedRecordSink {
+    fn new(
+        format: IndexFormat,
+        qbi2_radix_bits: u8,
+        file: &mut File,
+        record_count: usize,
+        bam_metadata: BamMetadata,
+    ) -> Result<Self> {
+        match format {
+            IndexFormat::Qbi1 => {
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| format!("[qbix] could not seek temporary index: {e}"))?;
+                write_header(file, record_count, bam_metadata)?;
+                Ok(Self::Qbi1(Qbi1Writer {
+                    records: SectionWriter::with_capacity(
+                        usize::from(HEADER_SIZE),
+                        INDEX_IO_BUFFER_SIZE,
+                    ),
+                }))
+            }
+            IndexFormat::Qbi2 => Ok(Self::Qbi2(Box::new(Qbi2Writer::new(
+                record_count,
+                bam_metadata,
+                qbi2_radix_bits,
+            )?))),
+        }
+    }
+
+    fn push(&mut self, file: &mut File, record: Record) -> Result<()> {
+        match self {
+            Self::Qbi1(writer) => writer.push(file, record),
+            Self::Qbi2(writer) => writer.push(file, record),
+        }
+    }
+
+    fn finish(self, file: &mut File) -> Result<()> {
+        match self {
+            Self::Qbi1(writer) => writer.finish(file),
+            Self::Qbi2(writer) => writer.finish(file),
+        }
+    }
+}
+
+struct Qbi1Writer {
+    records: SectionWriter,
+}
+
+impl Qbi1Writer {
+    fn push(&mut self, file: &mut File, record: Record) -> Result<()> {
+        self.records.write(file, &record.qhash.to_le_bytes())?;
+        self.records.write(file, &record.file_offset.to_le_bytes())
+    }
+
+    fn finish(mut self, file: &mut File) -> Result<()> {
+        self.records.flush(file)?;
+        file.flush()
+            .map_err(|e| format!("[qbix] could not flush QBI1 index: {e}"))
+    }
+}
+
+struct SectionWriter {
+    start: usize,
+    written: usize,
+    flush_threshold: usize,
+    buffer: Vec<u8>,
+}
+
+impl SectionWriter {
+    fn new(start: usize) -> Self {
+        Self::with_capacity(start, SECTION_IO_BUFFER_SIZE)
+    }
+
+    fn with_capacity(start: usize, flush_threshold: usize) -> Self {
+        Self {
+            start,
+            written: 0,
+            flush_threshold,
+            buffer: Vec::with_capacity(flush_threshold),
+        }
+    }
+
+    fn write(&mut self, file: &mut File, bytes: &[u8]) -> Result<()> {
+        self.buffer.extend_from_slice(bytes);
+        if self.buffer.len() >= self.flush_threshold {
+            self.flush(file)?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, file: &mut File) -> Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let offset = self
+            .start
+            .checked_add(self.written)
+            .ok_or_else(|| "[qbix] index section offset overflow".to_string())?;
+        file.seek(SeekFrom::Start(offset as u64))
+            .map_err(|e| format!("[qbix] could not seek index section: {e}"))?;
+        file.write_all(&self.buffer)
+            .map_err(|e| format!("[qbix] could not write index section: {e}"))?;
+        self.written += self.buffer.len();
+        self.buffer.clear();
+        Ok(())
+    }
+}
+
 fn write_header<W: Write>(
     writer: &mut W,
     record_count: usize,
     bam_metadata: BamMetadata,
 ) -> Result<()> {
     writer
-        .write_all(MAGIC)
+        .write_all(QBI1_MAGIC)
         .map_err(|_| "[qbix] write error while writing file magic".to_string())?;
     write_u16_le(writer, HEADER_SIZE, "header size")?;
     write_u16_le(writer, RECORD_SIZE, "record size")?;
@@ -739,6 +1166,7 @@ fn write_header<W: Write>(
     write_u64_le(writer, bam_metadata.header_hash, "BAM header hash")
 }
 
+#[cfg(test)]
 fn write_record<W: Write>(writer: &mut W, record: Record) -> Result<()> {
     write_u64_le(writer, record.qhash, "index record")?;
     write_u64_le(writer, record.file_offset, "index record")
@@ -785,339 +1213,4 @@ where
     writer
         .write_all(&value.to_le_bytes())
         .map_err(|_| format!("[qbix] write error while writing {what}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Read;
-    use std::{env, process};
-
-    use super::*;
-
-    #[test]
-    fn save_loads_hash_records_and_preserves_offsets() {
-        let mut index = Index::new();
-        index.add("read_b", 30).unwrap();
-        index.add("read_a", 10).unwrap();
-        index.add("read_a", 20).unwrap();
-
-        let path = env::temp_dir().join(format!("qbix-test-{}.qbi", process::id()));
-        index
-            .save(path.to_str().unwrap(), test_bam_metadata())
-            .unwrap();
-        let mut magic = [0u8; 4];
-        File::open(&path).unwrap().read_exact(&mut magic).unwrap();
-        assert_eq!(&magic, MAGIC);
-        let loaded = Index::load(None, Some(path.to_str().unwrap()), None).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(loaded.record_count(), 3);
-        let mut got = Vec::new();
-        for idx in 0..loaded.record_count() {
-            let record = loaded.record(idx).unwrap();
-            got.push((record.qhash, record.file_offset));
-        }
-        let mut expected = vec![
-            (qname_hash64(b"read_b"), 30),
-            (qname_hash64(b"read_a"), 10),
-            (qname_hash64(b"read_a"), 20),
-        ];
-        expected.sort();
-        assert_eq!(got, expected);
-
-        let mut offsets = Vec::new();
-        for idx in loaded.range_indices("read_a").unwrap() {
-            offsets.push(loaded.record(idx).unwrap().file_offset);
-        }
-        assert_eq!(offsets, [10, 20]);
-        assert!(loaded.range_indices("missing").unwrap().is_empty());
-    }
-
-    #[test]
-    fn bucket_builder_writes_same_bytes_as_in_memory_save() {
-        let records = [
-            ("read_b", 30),
-            ("read_a", 10),
-            ("read_c", 40),
-            ("read_a", 20),
-        ];
-        assert_bucket_builder_matches_in_memory_save(&records, 2, DEFAULT_SORT_THREADS);
-    }
-
-    #[test]
-    fn bucket_builder_parallel_sort_writes_same_bytes_as_in_memory_save() {
-        let records = [
-            ("read_b", 30),
-            ("read_a", 10),
-            ("read_c", 40),
-            ("read_a", 20),
-            ("read_d", 50),
-            ("read_e", 60),
-        ];
-        assert_bucket_builder_matches_in_memory_save(&records, 3, 3);
-    }
-
-    #[test]
-    fn bucket_builder_matches_in_memory_save_at_bucket_bit_bounds() {
-        let records = [
-            ("read_b", 30),
-            ("read_a", 10),
-            ("read_c", 40),
-            ("read_a", 20),
-            ("read_d", 50),
-            ("read_e", 60),
-        ];
-        assert_bucket_builder_matches_in_memory_save(&records, MIN_BUCKET_BITS, 2);
-        assert_bucket_builder_matches_in_memory_save(&records, MAX_BUCKET_BITS, 2);
-    }
-
-    #[test]
-    fn bucket_builder_rejects_oversized_bucket() {
-        let path = temp_index_path("oversized-bucket");
-        let mut builder = BucketIndexBuilder::new(path.to_str().unwrap(), 16, 1, 1, None).unwrap();
-        builder.add("same-read", 10).unwrap();
-
-        let err = builder.add("same-read", 20).unwrap_err();
-        assert!(err.contains("bucket"));
-        assert!(err.contains("too large"));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn bucket_builder_cleans_temp_dir_after_flushed_oversized_bucket_error() {
-        let temp_parent =
-            env::temp_dir().join(format!("qbix-flushed-error-cleanup-{}", process::id()));
-        std::fs::create_dir_all(&temp_parent).unwrap();
-        let path = temp_index_path("flushed-oversized-bucket");
-        {
-            let mut builder = BucketIndexBuilder::new(
-                path.to_str().unwrap(),
-                BUCKET_STAGING_BUFFER_SIZE,
-                MIN_BUCKET_BITS,
-                DEFAULT_SORT_THREADS,
-                Some(temp_parent.to_str().unwrap()),
-            )
-            .unwrap();
-            for offset in 0..(BUCKET_STAGING_BUFFER_SIZE / RECORD_SIZE_BYTES) {
-                builder.add("same-read", offset as i64).unwrap();
-            }
-            assert!(temp_parent
-                .read_dir()
-                .unwrap()
-                .next()
-                .expect("work directory should exist after flush")
-                .unwrap()
-                .path()
-                .read_dir()
-                .unwrap()
-                .next()
-                .is_some());
-
-            let err = builder
-                .add(
-                    "same-read",
-                    (BUCKET_STAGING_BUFFER_SIZE / RECORD_SIZE_BYTES) as i64,
-                )
-                .unwrap_err();
-            assert!(err.contains("too large"));
-        }
-
-        assert!(temp_parent.read_dir().unwrap().next().is_none());
-        let _ = std::fs::remove_dir_all(&temp_parent);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_rejects_mismatched_bam_metadata() {
-        let mut index = Index::new();
-        index.add("read_a", 10).unwrap();
-
-        let path = temp_index_path("metadata-mismatch");
-        index
-            .save(path.to_str().unwrap(), test_bam_metadata())
-            .unwrap();
-
-        let expected = BamMetadata {
-            size: 999,
-            ..test_bam_metadata()
-        };
-        let err = Index::load(None, Some(path.to_str().unwrap()), Some(expected)).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("index does not match BAM file"));
-    }
-
-    #[test]
-    fn load_rejects_legacy_v1_indexes() {
-        let path = temp_index_path("legacy-v1");
-        let mut fp = File::create(&path).unwrap();
-        fp.write_all(&1usize.to_ne_bytes()).unwrap();
-        fp.write_all(&[0u8; 48]).unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("unsupported index format"));
-    }
-
-    #[test]
-    fn load_rejects_short_headers() {
-        let path = temp_index_path("short-header");
-        let mut fp = File::create(&path).unwrap();
-        fp.write_all(MAGIC).unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("shorter than header"));
-    }
-
-    #[test]
-    fn load_rejects_unsupported_header_size() {
-        let path = temp_index_path("bad-header-size");
-        let mut fp = File::create(&path).unwrap();
-        write_header_custom(&mut fp, HEADER_SIZE - 1, RECORD_SIZE, 0, 0).unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("unsupported index header size"));
-    }
-
-    #[test]
-    fn load_rejects_unsupported_record_size() {
-        let path = temp_index_path("bad-record-size");
-        let mut fp = File::create(&path).unwrap();
-        write_header_custom(&mut fp, HEADER_SIZE, RECORD_SIZE + 1, 0, 0).unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("unsupported index record size"));
-    }
-
-    #[test]
-    fn load_rejects_file_size_mismatch() {
-        let path = temp_index_path("size-mismatch");
-        let mut fp = File::create(&path).unwrap();
-        write_header(&mut fp, 0, 1).unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("file size does not match header"));
-    }
-
-    #[test]
-    fn load_rejects_incompatible_name_table_indexes() {
-        let path = temp_index_path("name-table-index");
-        let mut fp = File::create(&path).unwrap();
-        write_header(&mut fp, 2, 1).unwrap();
-        fp.write_all(b"a\0").unwrap();
-        write_u64_le(&mut fp, qname_hash64(b"a"), "record qhash").unwrap();
-        write_u64_le(&mut fp, 1i64, "record file offset").unwrap();
-
-        let err = Index::load(None, Some(path.to_str().unwrap()), None).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("incompatible index"));
-    }
-
-    #[test]
-    fn load_rejects_file_offsets_too_large_for_htslib() {
-        let path = temp_index_path("too-large-offset");
-        let mut fp = File::create(&path).unwrap();
-        write_header(&mut fp, 0, 1).unwrap();
-        write_u64_le(&mut fp, qname_hash64(b"a"), "record qhash").unwrap();
-        write_u64_le(&mut fp, u64::MAX, "record file offset").unwrap();
-
-        let index = Index::load(None, Some(path.to_str().unwrap()), None).unwrap();
-        let err = index.record(0).unwrap_err();
-        let _ = std::fs::remove_file(&path);
-        assert!(err.contains("too large for htslib"));
-    }
-
-    fn write_header<W: Write>(
-        writer: &mut W,
-        name_count_bytes: usize,
-        record_count: usize,
-    ) -> Result<()> {
-        write_header_custom(
-            writer,
-            HEADER_SIZE,
-            RECORD_SIZE,
-            name_count_bytes,
-            record_count,
-        )
-    }
-
-    fn write_header_custom<W: Write>(
-        writer: &mut W,
-        header_size: u16,
-        record_size: u16,
-        name_count_bytes: usize,
-        record_count: usize,
-    ) -> Result<()> {
-        writer
-            .write_all(MAGIC)
-            .map_err(|_| "[qbix] write error while writing file magic".to_string())?;
-        write_u16_le(writer, header_size, "header size")?;
-        write_u16_le(writer, record_size, "record size")?;
-        write_u64_le(writer, name_count_bytes, "read name byte count")?;
-        write_u64_le(writer, record_count, "record count")?;
-        let metadata = test_bam_metadata();
-        write_u64_le(writer, metadata.size, "BAM size")?;
-        write_u64_le(writer, metadata.mtime, "BAM mtime")?;
-        write_u64_le(writer, metadata.header_hash, "BAM header hash")
-    }
-
-    fn test_bam_metadata() -> BamMetadata {
-        BamMetadata {
-            size: 123,
-            mtime: 456,
-            header_hash: 789,
-        }
-    }
-
-    fn assert_bucket_builder_matches_in_memory_save(
-        records: &[(&str, i64)],
-        bucket_bits: u8,
-        sort_threads: usize,
-    ) {
-        let metadata = test_bam_metadata();
-        let in_memory_path = temp_index_path(&format!(
-            "in-memory-bits-{bucket_bits}-threads-{sort_threads}"
-        ));
-        let bucket_path =
-            temp_index_path(&format!("bucket-bits-{bucket_bits}-threads-{sort_threads}"));
-        let bucket_tmp = env::temp_dir().join(format!(
-            "qbix-bucket-test-bits-{bucket_bits}-threads-{sort_threads}-{}",
-            process::id()
-        ));
-        std::fs::create_dir_all(&bucket_tmp).unwrap();
-
-        let mut index = Index::new();
-        let mut builder = BucketIndexBuilder::new(
-            bucket_path.to_str().unwrap(),
-            DEFAULT_INDEX_MEMORY_LIMIT,
-            bucket_bits,
-            sort_threads,
-            Some(bucket_tmp.to_str().unwrap()),
-        )
-        .unwrap();
-        for (readname, offset) in records {
-            index.add(readname, *offset).unwrap();
-            builder.add(readname, *offset).unwrap();
-        }
-
-        index
-            .save(in_memory_path.to_str().unwrap(), metadata)
-            .unwrap();
-        builder.finish(metadata).unwrap();
-
-        let in_memory = std::fs::read(&in_memory_path).unwrap();
-        let bucket = std::fs::read(&bucket_path).unwrap();
-        let _ = std::fs::remove_file(&in_memory_path);
-        let _ = std::fs::remove_file(&bucket_path);
-        let _ = std::fs::remove_dir_all(&bucket_tmp);
-
-        assert_eq!(bucket, in_memory, "bucket_bits={bucket_bits}");
-    }
-
-    fn temp_index_path(name: &str) -> std::path::PathBuf {
-        env::temp_dir().join(format!("qbix-test-{name}-{}.qbi", process::id()))
-    }
 }

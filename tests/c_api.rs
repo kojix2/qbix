@@ -53,6 +53,37 @@ fn c_api_builds_opens_looks_up_and_closes() {
 }
 
 #[test]
+fn c_api_reader_opens_qbi2() {
+    let temp = TempDir::new("c-api-qbi2");
+    let bam_path = temp.path().join("reads.bam");
+    let index_path = temp.path().join("reads.qbi");
+    write_unmapped_bam(bam_path.to_str().unwrap(), &["read_a", "read_a", "read_b"]);
+    let mut options = qbix::BuildOptions::default();
+    options.index_path = Some(index_path.clone());
+    options.index_format = Some(qbix::IndexFormat::Qbi2);
+    options.qbi2_radix_bits = Some(8);
+    qbix::build_index(&bam_path, options).unwrap();
+    assert_eq!(std::fs::metadata(&index_path).unwrap().len(), 2_246);
+
+    let bam = CString::new(bam_path.to_str().unwrap()).unwrap();
+    let index = CString::new(index_path.to_str().unwrap()).unwrap();
+    let handle = qbix::c_api::qbix_index_open(bam.as_ptr(), index.as_ptr(), 1);
+    assert!(!handle.is_null(), "{}", last_error());
+    let read_name = CString::new("read_a").unwrap();
+    let mut hits = ptr::null_mut();
+    let mut hit_count = 0usize;
+    let ret = unsafe {
+        qbix::c_api::qbix_index_lookup(handle, read_name.as_ptr(), &mut hits, &mut hit_count)
+    };
+    assert_eq!(ret, 0, "{}", last_error());
+    assert_eq!(hit_count, 2);
+    unsafe {
+        qbix::c_api::qbix_hits_free(hits, hit_count);
+        qbix::c_api::qbix_index_close(handle);
+    }
+}
+
+#[test]
 fn c_api_reports_last_error() {
     let ret = qbix::c_api::qbix_build_index(ptr::null(), ptr::null(), 1);
     assert_eq!(ret, -1);

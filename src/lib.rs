@@ -10,7 +10,7 @@ mod index;
 
 pub use api::{
     build_index, check_index, read_index_records, BuildOptions, CheckMode, CheckOptions,
-    IndexRecord, IndexedBam, LookupHit, LookupOptions, OutputOrder, VirtualOffset,
+    IndexFormat, IndexRecord, IndexedBam, LookupHit, LookupOptions, OutputOrder, VirtualOffset,
 };
 pub use error::{Error, PublicResult as Result};
 

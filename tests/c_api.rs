@@ -60,6 +60,21 @@ fn c_api_reports_last_error() {
 }
 
 #[test]
+fn c_api_lookup_clears_outputs_before_failure() {
+    let mut hits = std::ptr::NonNull::<qbix::c_api::qbix_hit_t>::dangling().as_ptr();
+    let mut hit_count = 42usize;
+
+    let ret = unsafe {
+        qbix::c_api::qbix_index_lookup(ptr::null_mut(), ptr::null(), &mut hits, &mut hit_count)
+    };
+
+    assert_eq!(ret, -1);
+    assert!(hits.is_null());
+    assert_eq!(hit_count, 0);
+    assert!(last_error().contains("index handle is null"));
+}
+
+#[test]
 fn c_api_rejects_unknown_check_mode() {
     let temp = TempDir::new("c-api-check-mode");
     let bam = temp.path().join("reads.bam");

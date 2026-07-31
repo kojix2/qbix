@@ -92,8 +92,10 @@ pub extern "C" fn qbix_index_open(
 ///
 /// `index` must be a valid handle returned by `qbix_index_open`. `read_name`
 /// must point to a valid NUL-terminated UTF-8 string. `hits_out` and
-/// `hit_count_out` must be valid writable pointers. On success, a non-null
-/// `*hits_out` must be released with `qbix_hits_free` and the returned count.
+/// `hit_count_out` must be valid writable pointers. They are initialized to
+/// null and zero before lookup, including when lookup later fails. On success,
+/// a non-null `*hits_out` must be released with `qbix_hits_free` and the
+/// returned count.
 pub unsafe extern "C" fn qbix_index_lookup(
     index: *mut qbix_index_t,
     read_name: *const c_char,
@@ -101,14 +103,16 @@ pub unsafe extern "C" fn qbix_index_lookup(
     hit_count_out: *mut usize,
 ) -> c_int {
     c_status(|| {
-        if index.is_null() {
-            return Err("[qbix] index handle is null".to_string());
-        }
         if hits_out.is_null() {
             return Err("[qbix] hits_out is null".to_string());
         }
         if hit_count_out.is_null() {
             return Err("[qbix] hit_count_out is null".to_string());
+        }
+        *hits_out = ptr::null_mut();
+        *hit_count_out = 0;
+        if index.is_null() {
+            return Err("[qbix] index handle is null".to_string());
         }
         let read_name = cstr_arg(read_name, "read_name")?;
         let index = &*index;
@@ -125,8 +129,6 @@ pub unsafe extern "C" fn qbix_index_lookup(
 
         let hit_count = hits.len();
         if hit_count == 0 {
-            *hits_out = ptr::null_mut();
-            *hit_count_out = 0;
             return Ok(());
         }
 

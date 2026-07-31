@@ -34,8 +34,10 @@ int qbix_check_index(const char *bam_path,
 qbix_index_t *qbix_index_open(const char *bam_path, const char *index_path, size_t threads);
 
 /*
- * On success, *hits_out must be released with qbix_hits_free using the returned
- * *hit_count_out. No matches are reported as a NULL pointer and a zero count.
+ * If hits_out and hit_count_out are non-NULL, they are initialized to NULL and
+ * zero before lookup and remain so on failure. On success, *hits_out must be
+ * released with qbix_hits_free using the returned *hit_count_out. No matches
+ * are reported as a NULL pointer and a zero count.
  */
 int qbix_index_lookup(qbix_index_t *index,
                       const char *read_name,

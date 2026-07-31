@@ -78,31 +78,7 @@ where
                 temp_dir: temp_dir.as_deref(),
             },
         ),
-        Action::Get {
-            input_bam,
-            input_index,
-            readnames,
-            readnames_file,
-            unique,
-            threads,
-            order,
-            output_format,
-            output_path,
-            missing_path,
-            color_mode,
-        } => run_get(
-            &input_bam,
-            input_index.as_deref(),
-            readnames,
-            readnames_file.as_deref(),
-            unique,
-            threads,
-            order,
-            output_format,
-            output_path.as_deref(),
-            missing_path.as_deref(),
-            color_mode,
-        ),
+        Action::Get(action) => run_get(action),
         Action::Show { input_index } => commands::show_index(&input_index),
         Action::Check {
             input_bam,
@@ -171,19 +147,7 @@ enum Action {
         sort_threads: usize,
         temp_dir: Option<String>,
     },
-    Get {
-        input_bam: String,
-        input_index: Option<String>,
-        readnames: Vec<String>,
-        readnames_file: Option<String>,
-        unique: bool,
-        threads: usize,
-        order: GetOrder,
-        output_format: OutputFormat,
-        output_path: Option<String>,
-        missing_path: Option<String>,
-        color_mode: ColorMode,
-    },
+    Get(GetAction),
     Show {
         input_index: String,
     },
@@ -202,6 +166,21 @@ enum Action {
     HelpDisplayed,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct GetAction {
+    input_bam: String,
+    input_index: Option<String>,
+    readnames: Vec<String>,
+    readnames_file: Option<String>,
+    unique: bool,
+    threads: usize,
+    order: GetOrder,
+    output_format: OutputFormat,
+    output_path: Option<String>,
+    missing_path: Option<String>,
+    color_mode: ColorMode,
+}
+
 fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
     match matches.subcommand() {
         Some((COMMAND_INDEX, matches)) => Ok(Action::Index {
@@ -214,7 +193,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             sort_threads: sort_threads(matches)?,
             temp_dir: optional_string(matches, ARG_TEMP_DIR),
         }),
-        Some((COMMAND_GET, matches)) => Ok(Action::Get {
+        Some((COMMAND_GET, matches)) => Ok(Action::Get(GetAction {
             input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
             input_index: optional_string(matches, ARG_INDEX),
             readnames: optional_values(matches, ARG_READNAMES),
@@ -226,7 +205,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             output_path: optional_string(matches, ARG_OUTPUT),
             missing_path: optional_string(matches, ARG_MISSING),
             color_mode: color_mode(matches)?,
-        }),
+        })),
         Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
             input_index: required_string(matches, ARG_INPUT_INDEX)?.to_string(),
         }),
@@ -698,28 +677,28 @@ fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_get(
-    input_bam: &str,
-    input_index: Option<&str>,
-    readnames: Vec<String>,
-    readnames_file: Option<&str>,
-    unique: bool,
-    threads: usize,
-    order: GetOrder,
-    output_format: OutputFormat,
-    output_path: Option<&str>,
-    missing_path: Option<&str>,
-    color_mode: ColorMode,
-) -> Result<()> {
-    let options = commands::GetOptions {
+fn run_get(action: GetAction) -> Result<()> {
+    let GetAction {
+        input_bam,
         input_index,
+        readnames,
+        readnames_file,
+        unique,
+        threads,
+        order,
+        output_format,
+        output_path,
+        missing_path,
+        color_mode,
+    } = action;
+    let options = commands::GetOptions {
+        input_index: input_index.as_deref(),
         threads,
         order,
         unique,
         output_format,
-        output_path,
-        missing_path,
+        output_path: output_path.as_deref(),
+        missing_path: missing_path.as_deref(),
         color_mode,
     };
     let positional = readnames.into_iter().map(Ok);
@@ -727,18 +706,18 @@ fn run_get(
     // Keep file and stdin input lazy here. In query order, get_records consumes
     // this chain one QNAME at a time, so a long-running generator can produce
     // results before EOF without storing its complete output in memory.
-    match readnames_file {
-        None => commands::get_records(input_bam, positional, options),
+    match readnames_file.as_deref() {
+        None => commands::get_records(&input_bam, positional, options),
         Some("-") => {
             let stdin = std::io::stdin();
             let from_file = readnames_from_reader(stdin.lock());
-            commands::get_records(input_bam, positional.chain(from_file), options)
+            commands::get_records(&input_bam, positional.chain(from_file), options)
         }
         Some(path) => {
             let file = std::fs::File::open(path)
                 .map_err(|e| format!("[qbix] could not open read names file {path}: {e}"))?;
             let from_file = readnames_from_reader(std::io::BufReader::new(file));
-            commands::get_records(input_bam, positional.chain(from_file), options)
+            commands::get_records(&input_bam, positional.chain(from_file), options)
         }
     }
 }
@@ -832,7 +811,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string(), "read2".to_string()],
@@ -844,7 +823,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -864,7 +843,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec![
@@ -881,7 +860,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -899,7 +878,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string(), "read2".to_string()],
@@ -911,7 +890,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -932,7 +911,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string()],
@@ -944,7 +923,7 @@ mod tests {
                 output_path: Some("hits.bam".to_string()),
                 missing_path: Some("missing.txt".to_string()),
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -954,7 +933,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string()],
@@ -966,7 +945,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -984,7 +963,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string()],
@@ -996,7 +975,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Always,
-            }
+            })
         );
     }
 
@@ -1006,7 +985,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: Vec::new(),
@@ -1018,7 +997,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 
@@ -1036,7 +1015,7 @@ mod tests {
 
         assert_eq!(
             action,
-            Action::Get {
+            Action::Get(GetAction {
                 input_bam: "reads.bam".to_string(),
                 input_index: None,
                 readnames: vec!["read1".to_string()],
@@ -1048,7 +1027,7 @@ mod tests {
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
-            }
+            })
         );
     }
 

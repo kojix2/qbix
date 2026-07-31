@@ -613,9 +613,22 @@ mod tests {
 
 pub(crate) fn show_index(input_index: &str) -> Result<()> {
     let index = Index::load(None, Some(input_index), None)?;
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
     for idx in 0..index.record_count() {
         let record = index.record(idx)?;
-        println!("{}\t{}", record.qhash, record.file_offset);
+        if let Err(error) = writeln!(out, "{}\t{}", record.qhash, record.file_offset) {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(format!("[qbix] show: could not write output: {error}"));
+        }
+    }
+    if let Err(error) = out.flush() {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            return Ok(());
+        }
+        return Err(format!("[qbix] show: could not write output: {error}"));
     }
     Ok(())
 }

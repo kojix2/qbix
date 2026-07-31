@@ -717,6 +717,7 @@ fn run_get(action: GetAction) -> Result<()> {
         output_format,
         output_path: output_path.as_deref(),
         missing_path: missing_path.as_deref(),
+        readnames_path: readnames_file.as_deref().filter(|path| *path != "-"),
         color_mode,
     };
     let positional = readnames.into_iter().map(Ok);

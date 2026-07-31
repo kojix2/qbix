@@ -3,6 +3,7 @@ use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
 use crate::index::{generate_index_filename, qname_hash64, BamMetadata, BucketIndexBuilder, Index};
 use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GetOrder {
@@ -78,6 +79,7 @@ pub(crate) struct GetOptions<'a> {
     pub(crate) output_format: OutputFormat,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) missing_path: Option<&'a str>,
+    pub(crate) readnames_path: Option<&'a str>,
     pub(crate) color_mode: ColorMode,
 }
 
@@ -92,6 +94,12 @@ pub(crate) struct BuildIndexOptions<'a> {
 }
 
 pub(crate) fn build_index(input_bam: &str, options: BuildIndexOptions<'_>) -> Result<()> {
+    let out_fn = generate_index_filename(Some(input_bam), options.output_index)?;
+    if paths_refer_to_same_file(Path::new(&out_fn), Path::new(input_bam)) {
+        return Err(format!(
+            "[qbix] output index must not overwrite the input BAM: {out_fn}"
+        ));
+    }
     let bam =
         HtsFile::open(input_bam, "r").map_err(|_| format!("[qbix] could not open {input_bam}"))?;
     bam.set_threads(options.threads)?;
@@ -100,7 +108,6 @@ pub(crate) fn build_index(input_bam: &str, options: BuildIndexOptions<'_>) -> Re
         .map_err(|_| format!("[qbix] could not read BAM header from {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let rec = BamRecord::new()?;
-    let out_fn = generate_index_filename(Some(input_bam), options.output_index)?;
     let mut builder = BucketIndexBuilder::new(
         &out_fn,
         options.memory_limit,
@@ -154,6 +161,16 @@ pub(crate) fn get_records<I>(input_bam: &str, readnames: I, options: GetOptions<
 where
     I: IntoIterator<Item = Result<String>>,
 {
+    let input_index = generate_index_filename(Some(input_bam), options.input_index)?;
+    let output_path = options.output_path.unwrap_or("-");
+    validate_get_paths(
+        input_bam,
+        &input_index,
+        output_path,
+        options.missing_path,
+        options.readnames_path,
+    )?;
+
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
     bam.set_threads(options.threads)?;
@@ -162,14 +179,7 @@ where
         .read_header()
         .map_err(|_| format!("[qbix] could not read BAM header: {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
-    let index = Index::load(Some(input_bam), options.input_index, Some(bam_metadata))?;
-    let output_path = options.output_path.unwrap_or("-");
-    if options.missing_path == Some("-") {
-        return Err("[qbix] --missing requires a file path; '-' is not supported".to_string());
-    }
-    if options.missing_path == Some(output_path) {
-        return Err("[qbix] --missing and --output must use different paths".to_string());
-    }
+    let index = Index::load(Some(input_bam), Some(&input_index), Some(bam_metadata))?;
     let mut missing_out = options
         .missing_path
         .map(|path| {
@@ -212,6 +222,80 @@ where
     }
 
     flush_missing_qnames(&mut missing_out)
+}
+
+fn validate_get_paths(
+    input_bam: &str,
+    input_index: &str,
+    output_path: &str,
+    missing_path: Option<&str>,
+    readnames_path: Option<&str>,
+) -> Result<()> {
+    if missing_path == Some("-") {
+        return Err("[qbix] --missing requires a file path; '-' is not supported".to_string());
+    }
+
+    for (option, path) in [("--output", Some(output_path)), ("--missing", missing_path)] {
+        let Some(path) = path.filter(|path| *path != "-") else {
+            continue;
+        };
+        for (input, input_path) in [
+            ("input BAM", Some(input_bam)),
+            ("input index", Some(input_index)),
+            ("read-name input", readnames_path),
+        ] {
+            let Some(input_path) = input_path else {
+                continue;
+            };
+            if paths_refer_to_same_file(Path::new(path), Path::new(input_path)) {
+                return Err(format!(
+                    "[qbix] {option} path must not overwrite the {input}: {path}"
+                ));
+            }
+        }
+    }
+
+    if let Some(missing_path) = missing_path {
+        if paths_refer_to_same_file(Path::new(output_path), Path::new(missing_path)) {
+            return Err("[qbix] --missing and --output must use different paths".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn paths_refer_to_same_file(first: &Path, second: &Path) -> bool {
+    same_existing_file(first, second) || comparable_path(first) == comparable_path(second)
+}
+
+#[cfg(unix)]
+fn same_existing_file(first: &Path, second: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match (std::fs::metadata(first), std::fs::metadata(second)) {
+        (Ok(first), Ok(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_existing_file(first: &Path, second: &Path) -> bool {
+    match (std::fs::canonicalize(first), std::fs::canonicalize(second)) {
+        (Ok(first), Ok(second)) => first == second,
+        _ => false,
+    }
+}
+
+fn comparable_path(path: &Path) -> PathBuf {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(file_name)) => std::fs::canonicalize(parent)
+            .map(|parent| parent.join(file_name))
+            .unwrap_or(absolute),
+        _ => absolute,
+    }
 }
 
 fn write_hits_in_query_order<I>(

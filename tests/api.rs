@@ -61,6 +61,22 @@ fn public_api_writes_sam_records_to_a_path() {
 
     qbix::build_index(&bam, qbix::BuildOptions::default()).unwrap();
     let mut indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
+    let bam_before = std::fs::read(&bam).unwrap();
+    let index_before = std::fs::read(indexed.index_path()).unwrap();
+    assert!(indexed
+        .write_sam_records_to_path(&bam, &["read_a"], qbix::OutputOrder::Query)
+        .unwrap_err()
+        .message()
+        .contains("input BAM"));
+    let index_path = indexed.index_path().to_path_buf();
+    assert!(indexed
+        .write_sam_records_to_path(&index_path, &["read_a"], qbix::OutputOrder::Query)
+        .unwrap_err()
+        .message()
+        .contains("input index"));
+    assert_eq!(std::fs::read(&bam).unwrap(), bam_before);
+    assert_eq!(std::fs::read(&index_path).unwrap(), index_before);
+
     let query_written = indexed
         .write_sam_records_to_path(&query_sam, &["read_a", "read_b"], qbix::OutputOrder::Query)
         .unwrap();

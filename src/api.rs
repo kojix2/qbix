@@ -311,7 +311,18 @@ impl IndexedBam {
         P: AsRef<Path>,
         S: AsRef<str>,
     {
-        let output_path = path_to_str(output_path.as_ref(), "output path")?;
+        let output_path = output_path.as_ref();
+        if commands::paths_refer_to_same_file(output_path, &self.bam_path) {
+            return Err(Error::new(
+                "[qbix] output path must not overwrite the input BAM",
+            ));
+        }
+        if commands::paths_refer_to_same_file(output_path, &self.index_path) {
+            return Err(Error::new(
+                "[qbix] output path must not overwrite the input index",
+            ));
+        }
+        let output_path = path_to_str(output_path, "output path")?;
         let out = HtsFile::open(output_path, "w")
             .map_err(|_| format!("[qbix] could not open SAM output: {output_path}"))?;
         let rec = BamRecord::new().map_err(Error::from)?;

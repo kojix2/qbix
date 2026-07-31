@@ -488,6 +488,81 @@ fn get_can_write_bam_output_to_path() {
 }
 
 #[test]
+fn get_rejects_output_paths_that_would_overwrite_inputs() {
+    let temp = TempDir::new("output-path-conflicts");
+    let bam = temp.path().join("reads.bam");
+    let names = temp.path().join("names.txt");
+    let shared_output = temp.path().join("shared.txt");
+    let bam = bam.to_str().unwrap();
+    let names = names.to_str().unwrap();
+    let index = format!("{bam}.qbi");
+    let shared_output = shared_output.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+    fs::write(names, "read_a\n").unwrap();
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+    let bam_before = fs::read(bam).unwrap();
+    let index_before = fs::read(&index).unwrap();
+    let names_before = fs::read(names).unwrap();
+    let cases = [
+        (
+            vec!["index", "--index", bam, bam],
+            "output index must not overwrite the input BAM",
+        ),
+        (
+            vec!["get", "--output", bam, bam, "read_a"],
+            "must not overwrite the input BAM",
+        ),
+        (
+            vec!["get", "--missing", bam, bam, "read_a"],
+            "must not overwrite the input BAM",
+        ),
+        (
+            vec!["get", "--output", &index, bam, "read_a"],
+            "must not overwrite the input index",
+        ),
+        (
+            vec!["get", "--missing", &index, bam, "read_a"],
+            "must not overwrite the input index",
+        ),
+        (
+            vec![
+                "get",
+                "--output",
+                shared_output,
+                "--missing",
+                shared_output,
+                bam,
+                "read_a",
+            ],
+            "must use different paths",
+        ),
+        (
+            vec!["get", "--file", names, "--output", names, bam],
+            "must not overwrite the read-name input",
+        ),
+        (
+            vec!["get", "--file", names, "--missing", names, bam],
+            "must not overwrite the read-name input",
+        ),
+    ];
+
+    for (args, expected_error) in cases {
+        let get = Command::new(qbix()).args(args).output().unwrap();
+        assert!(!get.status.success());
+        assert!(
+            String::from_utf8_lossy(&get.stderr).contains(expected_error),
+            "{}",
+            String::from_utf8_lossy(&get.stderr)
+        );
+        assert_eq!(fs::read(bam).unwrap(), bam_before);
+        assert_eq!(fs::read(&index).unwrap(), index_before);
+        assert_eq!(fs::read(names).unwrap(), names_before);
+    }
+    assert!(!std::path::Path::new(shared_output).exists());
+}
+
+#[test]
 fn supports_explicit_index_path() {
     let temp = TempDir::new("explicit-index");
     let bam = temp.path().join("reads.bam");

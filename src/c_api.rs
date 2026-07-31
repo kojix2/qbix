@@ -111,7 +111,7 @@ pub unsafe extern "C" fn qbix_index_lookup(
             return Err("[qbix] index handle is null".to_string());
         }
         let read_name = cstr_arg(read_name, "read_name")?;
-        let index = &*index;
+        let index = &mut *index;
         let hits = index
             .indexed
             .lookup_offsets(read_name)

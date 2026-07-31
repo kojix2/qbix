@@ -189,7 +189,8 @@ where
 /// An opened BAM file with a matching `.qbi` read-name index.
 ///
 /// This handle maintains a seek position in the underlying BAM file and is not
-/// intended to be shared across threads.
+/// intended to be shared across threads. Methods that seek and read BAM records
+/// require a mutable borrow of the handle.
 pub struct IndexedBam {
     bam_path: PathBuf,
     index_path: PathBuf,
@@ -258,7 +259,7 @@ impl IndexedBam {
     ///
     /// Hash matches from the index are checked against the BAM record before an
     /// offset is returned, so hash collisions do not produce false hits.
-    pub fn lookup_offsets(&self, read_name: &str) -> Result<Vec<VirtualOffset>> {
+    pub fn lookup_offsets(&mut self, read_name: &str) -> Result<Vec<VirtualOffset>> {
         let rec = BamRecord::new().map_err(Error::from)?;
         let mut offsets = Vec::new();
         for offset in self.lookup_offsets_unverified(read_name)? {
@@ -287,7 +288,7 @@ impl IndexedBam {
     }
 
     /// Return verified lookup hits for records whose BAM `QNAME` exactly matches `read_name`.
-    pub fn lookup(&self, read_name: &str) -> Result<Vec<LookupHit>> {
+    pub fn lookup(&mut self, read_name: &str) -> Result<Vec<LookupHit>> {
         self.lookup_offsets(read_name).map(|offsets| {
             offsets
                 .into_iter()
@@ -301,7 +302,7 @@ impl IndexedBam {
 
     /// Write verified matching records as SAM to `output_path`.
     pub fn write_sam_records_to_path<P, S>(
-        &self,
+        &mut self,
         output_path: P,
         read_names: &[S],
         order: OutputOrder,

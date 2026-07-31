@@ -32,7 +32,7 @@ fn public_api_builds_opens_and_queries_an_index() {
         .iter()
         .all(|record| record.virtual_offset.as_i64() >= 0));
 
-    let indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
+    let mut indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
     assert_eq!(indexed.bam_path(), bam.as_path());
     assert_eq!(indexed.index_path(), index_path.as_path());
     assert_eq!(indexed.record_count(), 3);
@@ -60,7 +60,7 @@ fn public_api_writes_sam_records_to_a_path() {
     write_unmapped_bam(bam_str, &["read_b", "read_a", "read_a"]);
 
     qbix::build_index(&bam, qbix::BuildOptions::default()).unwrap();
-    let indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
+    let mut indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
     let query_written = indexed
         .write_sam_records_to_path(&query_sam, &["read_a", "read_b"], qbix::OutputOrder::Query)
         .unwrap();

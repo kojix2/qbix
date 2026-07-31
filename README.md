@@ -283,7 +283,7 @@ qbix::check_index(
         ..qbix::CheckOptions::default()
     },
 )?;
-let bam = qbix::IndexedBam::open("reads.bam", qbix::LookupOptions::default())?;
+let mut bam = qbix::IndexedBam::open("reads.bam", qbix::LookupOptions::default())?;
 let hits = bam.lookup("read_a")?;
 ```
 

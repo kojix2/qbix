@@ -6,6 +6,7 @@ use crate::index::{
 };
 use crate::VERSION;
 use clap::{error::ErrorKind, Arg, ArgAction, ArgMatches, Command};
+use std::collections::HashSet;
 use std::io::BufRead;
 use std::io::Write;
 
@@ -29,6 +30,7 @@ const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
 const ARG_READNAMES_FILE: &str = "readnames_file";
+const ARG_UNIQUE: &str = "unique";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
@@ -288,6 +290,12 @@ fn get_command() -> Command {
                 .long("file")
                 .value_name("readnames.txt")
                 .help("Read names from a file, or '-' for stdin"),
+        )
+        .arg(
+            Arg::new(ARG_UNIQUE)
+                .long("unique")
+                .action(ArgAction::SetTrue)
+                .help("Process each input read name only once"),
         )
         .arg(
             Arg::new(ARG_OUTPUT_BAM)
@@ -682,6 +690,10 @@ fn get_readnames(matches: &ArgMatches) -> Result<Vec<String>> {
     if readnames.is_empty() {
         return Err("[qbix] missing required argument: readnames".to_string());
     }
+    if matches.get_flag(ARG_UNIQUE) {
+        let mut seen = HashSet::new();
+        readnames.retain(|readname| seen.insert(readname.clone()));
+    }
     Ok(readnames)
 }
 
@@ -793,6 +805,35 @@ mod tests {
                 input_index: None,
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 threads: 4,
+                order: GetOrder::Query,
+                output_format: OutputFormat::Sam,
+                output_path: None,
+                color_mode: ColorMode::Auto,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_unique_get_readnames_in_first_occurrence_order() {
+        let action = parse_args(strings([
+            "qbix",
+            "get",
+            "--unique",
+            "reads.bam",
+            "read2",
+            "read1",
+            "read2",
+            "read1",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            action,
+            Action::Get {
+                input_bam: "reads.bam".to_string(),
+                input_index: None,
+                readnames: vec!["read2".to_string(), "read1".to_string()],
+                threads: 1,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,

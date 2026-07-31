@@ -145,6 +145,41 @@ fn get_can_emit_records_in_bam_order() {
 }
 
 #[test]
+fn get_can_process_duplicate_query_names_only_once() {
+    let temp = TempDir::new("unique-query-names");
+    let bam = temp.path().join("reads.bam");
+    let bam = bam.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_a", "read_b"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let repeated = Command::new(qbix())
+        .args(["get", bam, "read_a", "read_a"])
+        .output()
+        .unwrap();
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert_eq!(
+        first_fields(&repeated.stdout),
+        ["read_a", "read_a", "read_a", "read_a"]
+    );
+
+    let unique = Command::new(qbix())
+        .args(["get", "--unique", bam, "read_a", "read_a"])
+        .output()
+        .unwrap();
+    assert!(
+        unique.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unique.stderr)
+    );
+    assert_eq!(first_fields(&unique.stdout), ["read_a", "read_a"]);
+}
+
+#[test]
 fn get_can_read_names_from_file() {
     let temp = TempDir::new("readnames-file");
     let bam = temp.path().join("reads.bam");

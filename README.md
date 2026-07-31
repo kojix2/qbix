@@ -126,6 +126,17 @@ Use `-f -` to read names from stdin:
 cat names.txt | qbix get reads.bam -f -
 ```
 
+Process each input read name only once while preserving the order of its first
+occurrence:
+
+```sh
+qbix get --unique reads.bam read_a read_a read_b
+qbix get --unique reads.bam -f names.txt
+```
+
+This only removes duplicate query names. If the BAM contains multiple records
+for a read name, all of those records are still written.
+
 Write matching records as BAM:
 
 ```sh

@@ -180,6 +180,114 @@ fn get_can_process_duplicate_query_names_only_once() {
 }
 
 #[test]
+fn get_can_report_missing_query_names() {
+    let temp = TempDir::new("missing-query-names");
+    let bam = temp.path().join("reads.bam");
+    let missing = temp.path().join("missing.txt");
+    let unique_missing = temp.path().join("unique-missing.txt");
+    let no_missing = temp.path().join("no-missing.txt");
+    let bam = bam.to_str().unwrap();
+    let missing = missing.to_str().unwrap();
+    let unique_missing = unique_missing.to_str().unwrap();
+    let no_missing = no_missing.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_a", "read_b"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args([
+            "get",
+            "--missing",
+            missing,
+            bam,
+            "read_a",
+            "not_present",
+            "not_present",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_a", "read_a"]);
+    assert_eq!(
+        fs::read_to_string(missing).unwrap(),
+        "not_present\nnot_present\n"
+    );
+
+    let unique = Command::new(qbix())
+        .args([
+            "get",
+            "--unique",
+            "--missing",
+            unique_missing,
+            bam,
+            "not_present",
+            "not_present",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        unique.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unique.stderr)
+    );
+    assert!(unique.stdout.is_empty());
+    assert_eq!(fs::read_to_string(unique_missing).unwrap(), "not_present\n");
+
+    let all_found = Command::new(qbix())
+        .args(["get", "--missing", no_missing, bam, "read_b"])
+        .output()
+        .unwrap();
+    assert!(
+        all_found.status.success(),
+        "{}",
+        String::from_utf8_lossy(&all_found.stderr)
+    );
+    assert_eq!(first_fields(&all_found.stdout), ["read_b"]);
+    assert!(fs::read(no_missing).unwrap().is_empty());
+}
+
+#[test]
+fn get_reports_missing_names_in_query_order_with_bam_order_output() {
+    let temp = TempDir::new("missing-with-bam-order");
+    let bam = temp.path().join("reads.bam");
+    let missing = temp.path().join("missing.txt");
+    let bam = bam.to_str().unwrap();
+    let missing = missing.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_b"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args([
+            "get",
+            "--bam-order",
+            "--missing",
+            missing,
+            bam,
+            "missing_b",
+            "read_b",
+            "missing_a",
+            "read_a",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_a", "read_b"]);
+    assert_eq!(
+        fs::read_to_string(missing).unwrap(),
+        "missing_b\nmissing_a\n"
+    );
+}
+
+#[test]
 fn get_can_read_names_from_file() {
     let temp = TempDir::new("readnames-file");
     let bam = temp.path().join("reads.bam");

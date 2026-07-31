@@ -31,6 +31,7 @@ const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
 const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_UNIQUE: &str = "unique";
+const ARG_MISSING: &str = "missing";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
@@ -86,6 +87,7 @@ where
             order,
             output_format,
             output_path,
+            missing_path,
             color_mode,
         } => commands::get_records(
             &input_bam,
@@ -96,6 +98,7 @@ where
                 order,
                 output_format,
                 output_path: output_path.as_deref(),
+                missing_path: missing_path.as_deref(),
                 color_mode,
             },
         ),
@@ -175,6 +178,7 @@ enum Action {
         order: GetOrder,
         output_format: OutputFormat,
         output_path: Option<String>,
+        missing_path: Option<String>,
         color_mode: ColorMode,
     },
     Show {
@@ -215,6 +219,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             order: get_order(matches),
             output_format: output_format(matches)?,
             output_path: optional_string(matches, ARG_OUTPUT),
+            missing_path: optional_string(matches, ARG_MISSING),
             color_mode: color_mode(matches)?,
         }),
         Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
@@ -296,6 +301,12 @@ fn get_command() -> Command {
                 .long("unique")
                 .action(ArgAction::SetTrue)
                 .help("Process each input read name only once"),
+        )
+        .arg(
+            Arg::new(ARG_MISSING)
+                .long("missing")
+                .value_name("missing.txt")
+                .help("Write query QNAMEs with no matching BAM record to a file"),
         )
         .arg(
             Arg::new(ARG_OUTPUT_BAM)
@@ -808,6 +819,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );
@@ -837,6 +849,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );
@@ -864,6 +877,7 @@ mod tests {
                 order: GetOrder::Bam,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );
@@ -878,6 +892,8 @@ mod tests {
             "-Ob",
             "-o",
             "hits.bam",
+            "--missing",
+            "missing.txt",
             "read1",
         ]))
         .unwrap();
@@ -892,6 +908,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
                 output_path: Some("hits.bam".to_string()),
+                missing_path: Some("missing.txt".to_string()),
                 color_mode: ColorMode::Auto,
             }
         );
@@ -911,6 +928,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );
@@ -938,6 +956,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Always,
             }
         );
@@ -972,6 +991,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );
@@ -1006,6 +1026,7 @@ mod tests {
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
                 output_path: None,
+                missing_path: None,
                 color_mode: ColorMode::Auto,
             }
         );

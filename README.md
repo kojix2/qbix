@@ -137,6 +137,16 @@ qbix get --unique reads.bam -f names.txt
 This only removes duplicate query names. If the BAM contains multiple records
 for a read name, all of those records are still written.
 
+Write query names that have no matching BAM record to a newline-delimited file:
+
+```sh
+qbix get --missing missing.txt reads.bam -f names.txt
+```
+
+Missing names are written in query order. Duplicate queries are reported once
+per occurrence unless `--unique` is also used. The report file is empty when
+all query names are found.
+
 Write matching records as BAM:
 
 ```sh

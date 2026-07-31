@@ -168,7 +168,7 @@ fn get_can_process_duplicate_query_names_only_once() {
     );
 
     let unique = Command::new(qbix())
-        .args(["get", "--unique", bam, "read_a", "read_a"])
+        .args(["get", "--bam-order", "--unique", bam, "read_a", "read_a"])
         .output()
         .unwrap();
     assert!(
@@ -220,6 +220,7 @@ fn get_can_report_missing_query_names() {
     let unique = Command::new(qbix())
         .args([
             "get",
+            "--bam-order",
             "--unique",
             "--missing",
             unique_missing,
@@ -288,14 +289,14 @@ fn get_reports_missing_names_in_query_order_with_bam_order_output() {
 }
 
 #[test]
-fn get_can_read_names_from_file() {
-    let temp = TempDir::new("readnames-file");
+fn get_can_read_crlf_names_from_file() {
+    let temp = TempDir::new("readnames-file-crlf");
     let bam = temp.path().join("reads.bam");
     let names = temp.path().join("names.txt");
     let bam = bam.to_str().unwrap();
     let names = names.to_str().unwrap();
     write_unmapped_bam(bam, &["read_a", "read_b", "read_c"]);
-    fs::write(names, "read_c\nread_a\n").unwrap();
+    fs::write(names, b"read_c\r\nread_a\r\n").unwrap();
 
     assert_success(Command::new(qbix()).args(["index", bam]));
 

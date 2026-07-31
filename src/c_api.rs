@@ -80,11 +80,7 @@ pub extern "C" fn qbix_index_open(
     index_path: *const c_char,
     threads: usize,
 ) -> *mut qbix_index_t {
-    c_ptr(
-        || open_index(bam_path, index_path, threads),
-        ptr::null_mut(),
-        |index| Box::into_raw(Box::new(index)),
-    )
+    c_boxed_ptr(|| open_index(bam_path, index_path, threads))
 }
 
 #[no_mangle]
@@ -213,19 +209,18 @@ where
     }
 }
 
-fn c_ptr<F, T, R, M>(f: F, null_value: R, map_ok: M) -> R
+fn c_boxed_ptr<F, T>(f: F) -> *mut T
 where
     F: FnOnce() -> Result<T, String>,
-    M: FnOnce(T) -> R,
 {
     match c_result(f) {
-        Ok(index) => {
+        Ok(value) => {
             clear_last_error();
-            map_ok(index)
+            Box::into_raw(Box::new(value))
         }
         Err(err) => {
             set_last_error(err);
-            null_value
+            ptr::null_mut()
         }
     }
 }

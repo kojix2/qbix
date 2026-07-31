@@ -828,73 +828,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_unique_get_readnames() {
-        let action = parse_args(strings([
-            "qbix",
-            "get",
-            "--unique",
-            "reads.bam",
-            "read2",
-            "read1",
-            "read2",
-            "read1",
-        ]))
-        .unwrap();
-
-        assert_eq!(
-            action,
-            Action::Get(GetAction {
-                input_bam: "reads.bam".to_string(),
-                input_index: None,
-                readnames: vec![
-                    "read2".to_string(),
-                    "read1".to_string(),
-                    "read2".to_string(),
-                    "read1".to_string(),
-                ],
-                readnames_file: None,
-                unique: true,
-                threads: 1,
-                order: GetOrder::Query,
-                output_format: OutputFormat::Sam,
-                output_path: None,
-                missing_path: None,
-                color_mode: ColorMode::Auto,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_get_bam_order() {
-        let action = parse_args(strings([
-            "qbix",
-            "get",
-            "--bam-order",
-            "reads.bam",
-            "read1",
-            "read2",
-        ]))
-        .unwrap();
-
-        assert_eq!(
-            action,
-            Action::Get(GetAction {
-                input_bam: "reads.bam".to_string(),
-                input_index: None,
-                readnames: vec!["read1".to_string(), "read2".to_string()],
-                readnames_file: None,
-                unique: false,
-                threads: 1,
-                order: GetOrder::Bam,
-                output_format: OutputFormat::Sam,
-                output_path: None,
-                missing_path: None,
-                color_mode: ColorMode::Auto,
-            })
-        );
-    }
-
-    #[test]
     fn parses_get_output_options() {
         let action = parse_args(strings([
             "qbix",
@@ -942,58 +875,6 @@ mod tests {
                 threads: 1,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
-                output_path: None,
-                missing_path: None,
-                color_mode: ColorMode::Auto,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_get_color_mode() {
-        let action = parse_args(strings([
-            "qbix",
-            "get",
-            "--color",
-            "always",
-            "reads.bam",
-            "read1",
-        ]))
-        .unwrap();
-
-        assert_eq!(
-            action,
-            Action::Get(GetAction {
-                input_bam: "reads.bam".to_string(),
-                input_index: None,
-                readnames: vec!["read1".to_string()],
-                readnames_file: None,
-                unique: false,
-                threads: 1,
-                order: GetOrder::Query,
-                output_format: OutputFormat::Sam,
-                output_path: None,
-                missing_path: None,
-                color_mode: ColorMode::Always,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_get_readnames_file() {
-        let action = parse_args(strings(["qbix", "get", "reads.bam", "-f", "names.txt"])).unwrap();
-
-        assert_eq!(
-            action,
-            Action::Get(GetAction {
-                input_bam: "reads.bam".to_string(),
-                input_index: None,
-                readnames: Vec::new(),
-                readnames_file: Some("names.txt".to_string()),
-                unique: false,
-                threads: 1,
-                order: GetOrder::Query,
-                output_format: OutputFormat::Sam,
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,

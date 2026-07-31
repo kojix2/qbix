@@ -3,6 +3,8 @@ use std::os::raw::{c_char, c_int};
 
 use crate::error::Result;
 
+pub(crate) const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
+
 #[repr(C)]
 struct RawHtsFile {
     _private: [u8; 0],

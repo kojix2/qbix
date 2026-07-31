@@ -1,10 +1,8 @@
 use crate::error::Result;
-use crate::hts::{BamRecord, Header, HtsFile};
+use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
 use crate::index::{generate_index_filename, qname_hash64, BamMetadata, BucketIndexBuilder, Index};
 use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
-
-const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GetOrder {
@@ -53,13 +51,12 @@ impl OutputFormat {
     }
 }
 
-struct Hit<'a> {
-    readname: &'a str,
+struct Hit {
     query_index: usize,
     file_offset: i64,
 }
 
-type MissingWriter = Option<BufWriter<std::fs::File>>;
+type MissingWriter = BufWriter<std::fs::File>;
 
 struct GetContext<'a> {
     bam: &'a HtsFile,
@@ -67,7 +64,7 @@ struct GetContext<'a> {
     out: &'a mut RecordWriter,
     rec: &'a BamRecord,
     index: &'a Index,
-    missing_out: &'a mut MissingWriter,
+    missing_out: &'a mut Option<MissingWriter>,
 }
 
 pub(crate) struct GetOptions<'a> {
@@ -274,7 +271,6 @@ fn write_hits_in_bam_order(context: &mut GetContext<'_>, readnames: &[String]) -
         for idx in context.index.range_indices(readname)? {
             let record = context.index.record(idx)?;
             hits.push(Hit {
-                readname,
                 query_index,
                 file_offset: record.file_offset,
             });
@@ -282,25 +278,32 @@ fn write_hits_in_bam_order(context: &mut GetContext<'_>, readnames: &[String]) -
     }
     hits.sort_by_key(|hit| hit.file_offset);
 
-    let mut found = vec![false; readnames.len()];
+    let mut found = context
+        .missing_out
+        .is_some()
+        .then(|| vec![false; readnames.len()]);
     for hit in hits {
         context
             .bam
             .read_record_at(context.header, context.rec, hit.file_offset)?;
-        if context.rec.qname()? == hit.readname {
-            found[hit.query_index] = true;
+        if context.rec.qname()? == readnames[hit.query_index].as_str() {
+            if let Some(found) = &mut found {
+                found[hit.query_index] = true;
+            }
             context.out.write_record(context.header, context.rec)?;
         }
     }
-    for (readname, found) in readnames.iter().zip(found) {
-        if !found {
-            write_missing_qname(context.missing_out, readname)?;
+    if let Some(found) = found {
+        for (readname, found) in readnames.iter().zip(found) {
+            if !found {
+                write_missing_qname(context.missing_out, readname)?;
+            }
         }
     }
     Ok(())
 }
 
-fn write_missing_qname(missing_out: &mut MissingWriter, readname: &str) -> Result<()> {
+fn write_missing_qname(missing_out: &mut Option<MissingWriter>, readname: &str) -> Result<()> {
     let Some(out) = missing_out else {
         return Ok(());
     };
@@ -308,7 +311,7 @@ fn write_missing_qname(missing_out: &mut MissingWriter, readname: &str) -> Resul
         .map_err(|e| format!("[qbix] could not write missing QNAME output: {e}"))
 }
 
-fn flush_missing_qnames(missing_out: &mut MissingWriter) -> Result<()> {
+fn flush_missing_qnames(missing_out: &mut Option<MissingWriter>) -> Result<()> {
     let Some(out) = missing_out else {
         return Ok(());
     };

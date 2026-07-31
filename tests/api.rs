@@ -1,19 +1,14 @@
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use common::{write_unmapped_bam, TempDir};
 
 #[test]
-fn public_error_works_with_boxed_std_error() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = TempDir::new("api-boxed-error");
-    let bam = temp.path().join("reads.bam");
-    write_unmapped_bam(bam.to_str().unwrap(), &["read_a"]);
+fn public_error_implements_std_error() {
+    fn assert_std_error<T: std::error::Error>() {}
 
-    qbix::build_index(&bam, qbix::BuildOptions::default())?;
-    let indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default())?;
-    let _hits = indexed.lookup("read_a")?;
-    Ok(())
+    assert_std_error::<qbix::Error>();
 }
 
 #[test]
@@ -38,6 +33,7 @@ fn public_api_builds_opens_and_queries_an_index() {
         .all(|record| record.virtual_offset.as_i64() >= 0));
 
     let indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
+    assert_eq!(indexed.bam_path(), bam.as_path());
     assert_eq!(indexed.index_path(), index_path.as_path());
     assert_eq!(indexed.record_count(), 3);
 
@@ -58,22 +54,31 @@ fn public_api_builds_opens_and_queries_an_index() {
 fn public_api_writes_sam_records_to_a_path() {
     let temp = TempDir::new("api-write");
     let bam = temp.path().join("reads.bam");
-    let sam = temp.path().join("hits.sam");
+    let query_sam = temp.path().join("query.sam");
+    let bam_sam = temp.path().join("bam.sam");
     let bam_str = bam.to_str().unwrap();
     write_unmapped_bam(bam_str, &["read_b", "read_a", "read_a"]);
 
     qbix::build_index(&bam, qbix::BuildOptions::default()).unwrap();
     let indexed = qbix::IndexedBam::open(&bam, qbix::LookupOptions::default()).unwrap();
-    let written = indexed
-        .write_sam_records_to_path(&sam, &["read_a", "read_b"], qbix::OutputOrder::Bam)
+    let query_written = indexed
+        .write_sam_records_to_path(&query_sam, &["read_a", "read_b"], qbix::OutputOrder::Query)
+        .unwrap();
+    let bam_written = indexed
+        .write_sam_records_to_path(&bam_sam, &["read_a", "read_b"], qbix::OutputOrder::Bam)
         .unwrap();
 
-    assert_eq!(written, 3);
-    let sam = std::fs::read_to_string(sam).unwrap();
-    let read_names: Vec<_> = sam
+    assert_eq!(query_written, 3);
+    assert_eq!(bam_written, 3);
+    assert_eq!(sam_read_names(&query_sam), ["read_a", "read_a", "read_b"]);
+    assert_eq!(sam_read_names(&bam_sam), ["read_b", "read_a", "read_a"]);
+}
+
+fn sam_read_names(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap()
         .lines()
         .filter(|line| !line.starts_with('@'))
-        .map(|line| line.split('\t').next().unwrap())
-        .collect();
-    assert_eq!(read_names, ["read_b", "read_a", "read_a"]);
+        .map(|line| line.split('\t').next().unwrap().to_string())
+        .collect()
 }

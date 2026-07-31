@@ -2,13 +2,11 @@ use std::path::{Path, PathBuf};
 
 use crate::commands;
 use crate::error::{Error, PublicResult as Result};
-use crate::hts::{BamRecord, Header, HtsFile};
+use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
 use crate::index::{
     generate_index_filename, BamMetadata, Index, DEFAULT_BUCKET_BITS, DEFAULT_INDEX_MEMORY_LIMIT,
     DEFAULT_SORT_THREADS,
 };
-
-const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Options used when building a `.qbi` index.
 #[derive(Clone, Debug)]
@@ -261,11 +259,17 @@ impl IndexedBam {
     /// Hash matches from the index are checked against the BAM record before an
     /// offset is returned, so hash collisions do not produce false hits.
     pub fn lookup_offsets(&self, read_name: &str) -> Result<Vec<VirtualOffset>> {
-        self.lookup(read_name).map(|hits| {
-            hits.into_iter()
-                .map(|hit| hit.virtual_offset)
-                .collect::<Vec<_>>()
-        })
+        let rec = BamRecord::new().map_err(Error::from)?;
+        let mut offsets = Vec::new();
+        for offset in self.lookup_offsets_unverified(read_name)? {
+            self.bam
+                .read_record_at(&self.header, &rec, offset.as_i64())
+                .map_err(Error::from)?;
+            if rec.qname().map_err(Error::from)? == read_name {
+                offsets.push(offset);
+            }
+        }
+        Ok(offsets)
     }
 
     /// Return unverified candidate offsets for matching read-name hashes.
@@ -284,20 +288,15 @@ impl IndexedBam {
 
     /// Return verified lookup hits for records whose BAM `QNAME` exactly matches `read_name`.
     pub fn lookup(&self, read_name: &str) -> Result<Vec<LookupHit>> {
-        let rec = BamRecord::new().map_err(Error::from)?;
-        let mut hits = Vec::new();
-        for offset in self.lookup_offsets_unverified(read_name)? {
-            self.bam
-                .read_record_at(&self.header, &rec, offset.as_i64())
-                .map_err(Error::from)?;
-            if rec.qname().map_err(Error::from)? == read_name {
-                hits.push(LookupHit {
+        self.lookup_offsets(read_name).map(|offsets| {
+            offsets
+                .into_iter()
+                .map(|virtual_offset| LookupHit {
                     read_name: read_name.to_string(),
-                    virtual_offset: offset,
-                });
-            }
-        }
-        Ok(hits)
+                    virtual_offset,
+                })
+                .collect()
+        })
     }
 
     /// Write verified matching records as SAM to `output_path`.

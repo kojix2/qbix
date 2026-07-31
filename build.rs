@@ -90,7 +90,6 @@ fn build_biosyntax() {
         .success());
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rerun-if-env-changed=LIBBIOSYNTAX_DIR");
 }
 
 fn libbiosyntax_source_dir(out_dir: &Path) -> PathBuf {

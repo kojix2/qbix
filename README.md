@@ -186,7 +186,10 @@ qbix get reads.bam read_a read_b
 qbix get --query-order reads.bam read_a read_b
 ```
 
-Query-order output streams lookups without collecting all hits in memory.
+Query-order output streams lookups without collecting all hits in memory. When
+read names come from `-f -`, each name is looked up as it is read from stdin;
+qbix does not wait for EOF or collect all input names first. `--unique` retains
+only the set of names already seen.
 
 For multiple read names, `--bam-order` reads records in BAM file-offset order.
 This can reduce random seeking:
@@ -195,7 +198,7 @@ This can reduce random seeking:
 qbix get --bam-order reads.bam read_a read_b
 ```
 
-`--bam-order` must collect and sort matching hits before output.
+`--bam-order` must collect the input names and sort matching hits before output.
 
 If name-sorted output is needed, sort downstream:
 

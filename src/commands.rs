@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::hts::{BamRecord, Header, HtsFile};
 use crate::index::{generate_index_filename, qname_hash64, BamMetadata, BucketIndexBuilder, Index};
+use std::collections::HashSet;
 use std::io::{BufWriter, IsTerminal, Write};
 
 const BGZF_CACHE_SIZE: usize = 64 * 1024 * 1024;
@@ -58,10 +59,22 @@ struct Hit<'a> {
     file_offset: i64,
 }
 
+type MissingWriter = Option<BufWriter<std::fs::File>>;
+
+struct GetContext<'a> {
+    bam: &'a HtsFile,
+    header: &'a Header,
+    out: &'a mut RecordWriter,
+    rec: &'a BamRecord,
+    index: &'a Index,
+    missing_out: &'a mut MissingWriter,
+}
+
 pub(crate) struct GetOptions<'a> {
     pub(crate) input_index: Option<&'a str>,
     pub(crate) threads: usize,
     pub(crate) order: GetOrder,
+    pub(crate) unique: bool,
     pub(crate) output_format: OutputFormat,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) missing_path: Option<&'a str>,
@@ -137,11 +150,10 @@ pub(crate) fn build_index(input_bam: &str, options: BuildIndexOptions<'_>) -> Re
     Ok(())
 }
 
-pub(crate) fn get_records(
-    input_bam: &str,
-    readnames: &[String],
-    options: GetOptions<'_>,
-) -> Result<()> {
+pub(crate) fn get_records<I>(input_bam: &str, readnames: I, options: GetOptions<'_>) -> Result<()>
+where
+    I: IntoIterator<Item = Result<String>>,
+{
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
     bam.set_threads(options.threads)?;
@@ -158,7 +170,7 @@ pub(crate) fn get_records(
     if options.missing_path == Some(output_path) {
         return Err("[qbix] --missing and --output must use different paths".to_string());
     }
-    let missing_out = options
+    let mut missing_out = options
         .missing_path
         .map(|path| {
             std::fs::File::create(path)
@@ -174,72 +186,132 @@ pub(crate) fn get_records(
         options.threads,
         &header,
     )?;
-    let mut found = vec![false; readnames.len()];
 
-    if options.order == GetOrder::Query {
-        write_hits_in_query_order(&bam, &header, &mut out, &rec, &index, readnames, &mut found)?;
-    } else {
-        let mut hits = Vec::new();
-        for (query_index, readname) in readnames.iter().enumerate() {
-            for idx in index.range_indices(readname)? {
-                let record = index.record(idx)?;
-                hits.push(Hit {
-                    readname,
-                    query_index,
-                    file_offset: record.file_offset,
-                });
-            }
-        }
-        hits.sort_by_key(|hit| hit.file_offset);
-
-        for hit in hits {
-            bam.read_record_at(&header, &rec, hit.file_offset)?;
-            if rec.qname()? == hit.readname {
-                found[hit.query_index] = true;
-                out.write_record(&header, &rec)?;
-            }
+    {
+        let mut context = GetContext {
+            bam: &bam,
+            header: &header,
+            out: &mut out,
+            rec: &rec,
+            index: &index,
+            missing_out: &mut missing_out,
+        };
+        if options.order == GetOrder::Query {
+            // Query order can seek and emit each QNAME immediately. Do not
+            // collect this iterator: it may be a large or unbounded stdin
+            // stream, and processing must begin before the producer reaches EOF.
+            write_hits_in_query_order(&mut context, readnames, options.unique)?;
+        } else {
+            // BAM order cannot emit incrementally because all candidate offsets
+            // must be known before sorting. This intentionally consumes stdin
+            // to EOF and retains the QNAMEs; --unique is applied while collecting.
+            let readnames = collect_readnames(readnames, options.unique)?;
+            write_hits_in_bam_order(&mut context, &readnames)?;
         }
     }
 
-    write_missing_qnames(missing_out, readnames, &found)
+    flush_missing_qnames(&mut missing_out)
 }
 
-fn write_hits_in_query_order(
-    bam: &HtsFile,
-    header: &Header,
-    out: &mut RecordWriter,
-    rec: &BamRecord,
-    index: &Index,
-    readnames: &[String],
-    found: &mut [bool],
-) -> Result<()> {
-    for (query_index, readname) in readnames.iter().enumerate() {
-        for idx in index.range_indices(readname)? {
-            let record = index.record(idx)?;
-            bam.read_record_at(header, rec, record.file_offset)?;
-            if rec.qname()? == readname {
-                found[query_index] = true;
-                out.write_record(header, rec)?;
+fn write_hits_in_query_order<I>(
+    context: &mut GetContext<'_>,
+    readnames: I,
+    unique: bool,
+) -> Result<()>
+where
+    I: IntoIterator<Item = Result<String>>,
+{
+    let mut seen = HashSet::new();
+    let mut query_count = 0usize;
+    for readname in readnames {
+        let readname = readname?;
+        query_count += 1;
+        if unique && !seen.insert(readname.clone()) {
+            continue;
+        }
+        let mut found = false;
+        for idx in context.index.range_indices(&readname)? {
+            let record = context.index.record(idx)?;
+            context
+                .bam
+                .read_record_at(context.header, context.rec, record.file_offset)?;
+            if context.rec.qname()? == readname.as_str() {
+                found = true;
+                context.out.write_record(context.header, context.rec)?;
             }
+        }
+        if !found {
+            write_missing_qname(context.missing_out, &readname)?;
+        }
+    }
+    if query_count == 0 {
+        return Err("[qbix] missing required argument: readnames".to_string());
+    }
+    Ok(())
+}
+
+fn collect_readnames<I>(readnames: I, unique: bool) -> Result<Vec<String>>
+where
+    I: IntoIterator<Item = Result<String>>,
+{
+    let mut collected = Vec::new();
+    let mut seen = HashSet::new();
+    for readname in readnames {
+        let readname = readname?;
+        if !unique || seen.insert(readname.clone()) {
+            collected.push(readname);
+        }
+    }
+    if collected.is_empty() {
+        return Err("[qbix] missing required argument: readnames".to_string());
+    }
+    Ok(collected)
+}
+
+fn write_hits_in_bam_order(context: &mut GetContext<'_>, readnames: &[String]) -> Result<()> {
+    let mut hits = Vec::new();
+    for (query_index, readname) in readnames.iter().enumerate() {
+        for idx in context.index.range_indices(readname)? {
+            let record = context.index.record(idx)?;
+            hits.push(Hit {
+                readname,
+                query_index,
+                file_offset: record.file_offset,
+            });
+        }
+    }
+    hits.sort_by_key(|hit| hit.file_offset);
+
+    let mut found = vec![false; readnames.len()];
+    for hit in hits {
+        context
+            .bam
+            .read_record_at(context.header, context.rec, hit.file_offset)?;
+        if context.rec.qname()? == hit.readname {
+            found[hit.query_index] = true;
+            context.out.write_record(context.header, context.rec)?;
+        }
+    }
+    for (readname, found) in readnames.iter().zip(found) {
+        if !found {
+            write_missing_qname(context.missing_out, readname)?;
         }
     }
     Ok(())
 }
 
-fn write_missing_qnames(
-    missing_out: Option<BufWriter<std::fs::File>>,
-    readnames: &[String],
-    found: &[bool],
-) -> Result<()> {
-    let Some(mut out) = missing_out else {
+fn write_missing_qname(missing_out: &mut MissingWriter, readname: &str) -> Result<()> {
+    let Some(out) = missing_out else {
         return Ok(());
     };
-    for (readname, found) in readnames.iter().zip(found) {
-        if !found {
-            writeln!(out, "{readname}")
-                .map_err(|e| format!("[qbix] could not write missing QNAME output: {e}"))?;
-        }
-    }
+    writeln!(out, "{readname}")
+        .map_err(|e| format!("[qbix] could not write missing QNAME output: {e}"))
+}
+
+fn flush_missing_qnames(missing_out: &mut MissingWriter) -> Result<()> {
+    let Some(out) = missing_out else {
+        return Ok(());
+    };
     out.flush()
         .map_err(|e| format!("[qbix] could not write missing QNAME output: {e}"))
 }

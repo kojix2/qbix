@@ -321,7 +321,7 @@ fn get_can_read_names_from_stdin() {
     assert_success(Command::new(qbix()).args(["index", bam]));
 
     let mut child = Command::new(qbix())
-        .args(["get", bam, "-f", "-"])
+        .args(["get", bam, "-f", "-", "--query-order"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -340,6 +340,41 @@ fn get_can_read_names_from_stdin() {
         String::from_utf8_lossy(&get.stderr)
     );
     assert_eq!(first_fields(&get.stdout), ["read_b", "read_a"]);
+}
+
+#[test]
+fn query_order_processes_stdin_before_a_later_read_error() {
+    let temp = TempDir::new("streaming-stdin");
+    let bam = temp.path().join("reads.bam");
+    let output = temp.path().join("hits.sam");
+    let bam = bam.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a", "read_b"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let mut child = Command::new(qbix())
+        .args(["get", "--query-order", "-f", "-", "-o", output, bam])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"read_a\n\xff\n")
+        .unwrap();
+    let get = child.wait_with_output().unwrap();
+
+    assert!(!get.status.success());
+    assert!(String::from_utf8_lossy(&get.stderr).contains("could not read read names"));
+    assert_eq!(
+        first_fields(&fs::read(output).unwrap()),
+        ["read_a"],
+        "the first query must be processed before the later stdin error"
+    );
 }
 
 #[test]

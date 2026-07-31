@@ -83,9 +83,11 @@ impl Record {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 enum IndexStorage {
-    Owned { records: Vec<Record> },
+    #[cfg(test)]
+    Owned {
+        records: Vec<Record>,
+    },
     Mapped(MappedIndex),
 }
 
@@ -103,12 +105,12 @@ struct RawDiskRecord {
     file_offset: i64,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 struct OwnedIndexMut<'a> {
     records: &'a mut Vec<Record>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl IndexStorage {
     fn owned_mut(&mut self) -> Result<OwnedIndexMut<'_>> {
         match self {
@@ -150,7 +152,7 @@ pub(crate) struct Index {
 }
 
 impl Index {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
             storage: IndexStorage::Owned {
@@ -159,7 +161,7 @@ impl Index {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn add(&mut self, readname: &str, file_offset: i64) -> Result<()> {
         if file_offset < 0 {
             return Err("[qbix] cannot index a negative BGZF offset".to_string());
@@ -172,7 +174,7 @@ impl Index {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn save(&mut self, filename: &str, bam_metadata: BamMetadata) -> Result<()> {
         let owned = self.storage.owned_mut()?;
         owned.records.sort_unstable_by(Record::cmp_key);
@@ -269,6 +271,7 @@ impl Index {
 
     pub(crate) fn record_count(&self) -> usize {
         match &self.storage {
+            #[cfg(test)]
             IndexStorage::Owned { records, .. } => records.len(),
             IndexStorage::Mapped(mapped) => mapped.record_count,
         }
@@ -276,6 +279,7 @@ impl Index {
 
     pub(crate) fn bam_metadata(&self) -> Option<BamMetadata> {
         match &self.storage {
+            #[cfg(test)]
             IndexStorage::Owned { .. } => None,
             IndexStorage::Mapped(mapped) => Some(mapped.bam_metadata),
         }
@@ -283,6 +287,7 @@ impl Index {
 
     pub(crate) fn record(&self, index: usize) -> Result<Record> {
         match &self.storage {
+            #[cfg(test)]
             IndexStorage::Owned { records } => records
                 .get(index)
                 .copied()

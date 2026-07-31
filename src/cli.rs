@@ -31,9 +31,11 @@ const ARG_QUERY_ORDER: &str = "query_order";
 const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_UNIQUE: &str = "unique";
 const ARG_MISSING: &str = "missing";
+const ARG_WITH_HEADER: &str = "with_header";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
+#[cfg(feature = "biosyntax")]
 const ARG_COLOR: &str = "color";
 const ARG_QUICK: &str = "quick";
 const ARG_FULL: &str = "full";
@@ -173,6 +175,7 @@ struct GetAction {
     readnames: Vec<String>,
     readnames_file: Option<String>,
     unique: bool,
+    with_header: bool,
     threads: usize,
     order: GetOrder,
     output_format: OutputFormat,
@@ -199,6 +202,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             readnames: optional_values(matches, ARG_READNAMES),
             readnames_file: optional_string(matches, ARG_READNAMES_FILE),
             unique: matches.get_flag(ARG_UNIQUE),
+            with_header: matches.get_flag(ARG_WITH_HEADER),
             threads: threads(matches, 1)?,
             order: get_order(matches),
             output_format: output_format(matches)?,
@@ -255,7 +259,7 @@ fn index_command() -> Command {
 }
 
 fn get_command() -> Command {
-    Command::new(COMMAND_GET)
+    let command = Command::new(COMMAND_GET)
         .about("Retrieve BAM records by QNAME")
         .arg(index_arg())
         .arg(threads_arg())
@@ -293,6 +297,12 @@ fn get_command() -> Command {
                 .help("Write query QNAMEs with no matching BAM record to a file"),
         )
         .arg(
+            Arg::new(ARG_WITH_HEADER)
+                .long("with-header")
+                .action(ArgAction::SetTrue)
+                .help("Include the source BAM header in SAM output"),
+        )
+        .arg(
             Arg::new(ARG_OUTPUT_BAM)
                 .short('b')
                 .long("bam")
@@ -313,16 +323,16 @@ fn get_command() -> Command {
                 .long("output")
                 .value_name("output")
                 .help("Output path, or '-' for stdout"),
-        )
-        .arg(
-            Arg::new(ARG_COLOR)
-                .long("color")
-                .value_name("auto|always|never")
-                .default_value("auto")
-                .help("Color SAM output when libbiosyntax support is enabled"),
-        )
-        .arg(input_bam_arg())
-        .arg(readnames_arg())
+        );
+    #[cfg(feature = "biosyntax")]
+    let command = command.arg(
+        Arg::new(ARG_COLOR)
+            .long("color")
+            .value_name("auto|always|never")
+            .default_value("auto")
+            .help("Color SAM output when libbiosyntax support is enabled"),
+    );
+    command.arg(input_bam_arg()).arg(readnames_arg())
 }
 
 fn show_command() -> Command {
@@ -659,6 +669,7 @@ fn output_format(matches: &ArgMatches) -> Result<OutputFormat> {
     }
 }
 
+#[cfg(feature = "biosyntax")]
 fn color_mode(matches: &ArgMatches) -> Result<ColorMode> {
     match required_string(matches, ARG_COLOR)? {
         "auto" => Ok(ColorMode::Auto),
@@ -668,6 +679,11 @@ fn color_mode(matches: &ArgMatches) -> Result<ColorMode> {
             "[qbix] unsupported color mode: {value}; expected auto, always, or never"
         )),
     }
+}
+
+#[cfg(not(feature = "biosyntax"))]
+fn color_mode(_matches: &ArgMatches) -> Result<ColorMode> {
+    Ok(ColorMode::Auto)
 }
 
 fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
@@ -684,6 +700,7 @@ fn run_get(action: GetAction) -> Result<()> {
         readnames,
         readnames_file,
         unique,
+        with_header,
         threads,
         order,
         output_format,
@@ -696,6 +713,7 @@ fn run_get(action: GetAction) -> Result<()> {
         threads,
         order,
         unique,
+        with_header,
         output_format,
         output_path: output_path.as_deref(),
         missing_path: missing_path.as_deref(),
@@ -817,6 +835,7 @@ mod tests {
                 readnames: vec!["read1".to_string(), "read2".to_string()],
                 readnames_file: None,
                 unique: false,
+                with_header: false,
                 threads: 4,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,
@@ -838,6 +857,7 @@ mod tests {
             "hits.bam",
             "--missing",
             "missing.txt",
+            "--with-header",
             "read1",
         ]))
         .unwrap();
@@ -850,6 +870,7 @@ mod tests {
                 readnames: vec!["read1".to_string()],
                 readnames_file: None,
                 unique: false,
+                with_header: true,
                 threads: 1,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
@@ -872,6 +893,7 @@ mod tests {
                 readnames: vec!["read1".to_string()],
                 readnames_file: None,
                 unique: false,
+                with_header: false,
                 threads: 1,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Bam,
@@ -902,6 +924,7 @@ mod tests {
                 readnames: vec!["read1".to_string()],
                 readnames_file: Some("names.txt".to_string()),
                 unique: false,
+                with_header: false,
                 threads: 1,
                 order: GetOrder::Query,
                 output_format: OutputFormat::Sam,

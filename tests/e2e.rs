@@ -343,6 +343,27 @@ fn get_can_read_names_from_stdin() {
 }
 
 #[test]
+fn get_can_include_the_source_header_in_sam_output() {
+    let temp = TempDir::new("sam-header");
+    let bam = temp.path().join("reads.bam");
+    let bam = bam.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    let get = Command::new(qbix())
+        .args(["get", "--with-header", bam, "read_a"])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["@HD", "@SQ", "read_a"]);
+}
+
+#[test]
 fn query_order_processes_stdin_before_a_later_read_error() {
     let temp = TempDir::new("streaming-stdin");
     let bam = temp.path().join("reads.bam");
@@ -379,7 +400,7 @@ fn query_order_processes_stdin_before_a_later_read_error() {
 
 #[test]
 #[cfg(not(feature = "biosyntax"))]
-fn get_rejects_forced_color_without_biosyntax_feature() {
+fn get_omits_color_option_without_biosyntax_feature() {
     let temp = TempDir::new("color-disabled");
     let bam = temp.path().join("reads.bam");
     let bam = bam.to_str().unwrap();
@@ -387,12 +408,19 @@ fn get_rejects_forced_color_without_biosyntax_feature() {
 
     assert_success(Command::new(qbix()).args(["index", bam]));
 
+    let help = Command::new(qbix())
+        .args(["get", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("--color"));
+
     let get = Command::new(qbix())
         .args(["get", "--color", "always", bam, "read_a"])
         .output()
         .unwrap();
     assert!(!get.status.success());
-    assert!(String::from_utf8_lossy(&get.stderr).contains("--features biosyntax"));
+    assert!(String::from_utf8_lossy(&get.stderr).contains("unexpected argument"));
 }
 
 #[test]
@@ -406,7 +434,7 @@ fn get_can_force_colored_sam_output_with_biosyntax_feature() {
     assert_success(Command::new(qbix()).args(["index", bam]));
 
     let get = Command::new(qbix())
-        .args(["get", "--color", "always", bam, "read_a"])
+        .args(["get", "--color", "always", "--with-header", bam, "read_a"])
         .output()
         .unwrap();
     assert!(
@@ -414,7 +442,10 @@ fn get_can_force_colored_sam_output_with_biosyntax_feature() {
         "{}",
         String::from_utf8_lossy(&get.stderr)
     );
-    assert!(String::from_utf8_lossy(&get.stdout).contains("\x1b["));
+    let stdout = String::from_utf8_lossy(&get.stdout);
+    let first_line = stdout.lines().next().unwrap();
+    assert!(first_line.contains("\x1b["));
+    assert!(first_line.contains("@HD"));
 }
 
 #[test]

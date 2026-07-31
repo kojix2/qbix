@@ -161,7 +161,7 @@ impl Drop for Header {
 }
 
 impl Header {
-    pub(crate) fn text_hash(&self) -> Result<u64> {
+    pub(crate) fn text(&self) -> Result<&[u8]> {
         if self.0.is_null() {
             return Err("[qbix] invalid BAM header".to_string());
         }
@@ -170,12 +170,15 @@ impl Header {
         if text.is_null() && len > 0 {
             return Err("[qbix] invalid BAM header text".to_string());
         }
-        let bytes = if len == 0 {
+        Ok(if len == 0 {
             &[]
         } else {
             unsafe { std::slice::from_raw_parts(text as *const u8, len) }
-        };
-        Ok(fnv1a64(bytes))
+        })
+    }
+
+    pub(crate) fn text_hash(&self) -> Result<u64> {
+        Ok(fnv1a64(self.text()?))
     }
 }
 

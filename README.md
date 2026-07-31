@@ -75,6 +75,9 @@ It is disabled by default. Enable it explicitly if that license is acceptable:
 cargo build --release --features biosyntax
 ```
 
+Prebuilt binaries from GitHub Releases are built without this feature and do
+not include libbiosyntax.
+
 With this feature enabled, the build downloads libbiosyntax v0.1.0 into Cargo's
 build directory. To use an existing checkout instead:
 
@@ -111,8 +114,13 @@ Fetch records by QNAME. Output is SAM:
 qbix get reads.bam read_a read_b
 ```
 
-SAM output contains matching alignment records without the SAM header. 
-BAM output includes the source BAM header.
+SAM output contains matching alignment records without the SAM header by
+default. Use `--with-header` to include the source BAM header. BAM output
+always includes it.
+
+```sh
+qbix get --with-header reads.bam read_a read_b
+```
 
 Fetch records from a newline-delimited read-name file:
 

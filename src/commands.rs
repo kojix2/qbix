@@ -19,7 +19,9 @@ pub(crate) enum OutputFormat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ColorMode {
     Auto,
+    #[cfg(feature = "biosyntax")]
     Always,
+    #[cfg(feature = "biosyntax")]
     Never,
 }
 
@@ -72,6 +74,7 @@ pub(crate) struct GetOptions<'a> {
     pub(crate) threads: usize,
     pub(crate) order: GetOrder,
     pub(crate) unique: bool,
+    pub(crate) with_header: bool,
     pub(crate) output_format: OutputFormat,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) missing_path: Option<&'a str>,
@@ -180,6 +183,7 @@ where
         output_path,
         options.output_format,
         options.color_mode,
+        options.with_header,
         options.threads,
         &header,
     )?;
@@ -330,13 +334,17 @@ impl RecordWriter {
         output_path: &str,
         output_format: OutputFormat,
         color_mode: ColorMode,
+        with_header: bool,
         threads: usize,
         header: &Header,
     ) -> Result<Self> {
         if should_color(output_format, color_mode, output_path) {
             #[cfg(feature = "biosyntax")]
             {
-                return Ok(Self::Colored(ColorSamWriter::open(output_path)?));
+                return Ok(Self::Colored(ColorSamWriter::open(
+                    output_path,
+                    with_header.then_some(header),
+                )?));
             }
             #[cfg(not(feature = "biosyntax"))]
             {
@@ -355,6 +363,8 @@ impl RecordWriter {
         })?;
         if output_format == OutputFormat::Bam {
             out.set_threads(threads)?;
+        }
+        if output_format == OutputFormat::Bam || with_header {
             out.write_header(header)?;
         }
         Ok(Self::Hts(out))
@@ -377,7 +387,7 @@ struct ColorSamWriter {
 
 #[cfg(feature = "biosyntax")]
 impl ColorSamWriter {
-    fn open(output_path: &str) -> Result<Self> {
+    fn open(output_path: &str, header: Option<&Header>) -> Result<Self> {
         let writer: Box<dyn std::io::Write> = if output_path == "-" {
             Box::new(std::io::stdout())
         } else {
@@ -386,15 +396,33 @@ impl ColorSamWriter {
                     .map_err(|e| format!("[qbix] could not open SAM output: {output_path}: {e}"))?,
             )
         };
-        Ok(Self {
+        let mut out = Self {
             writer: std::io::BufWriter::new(writer),
             line_no: 0,
-        })
+        };
+        if let Some(header) = header {
+            out.write_header(header)?;
+        }
+        Ok(out)
+    }
+
+    fn write_header(&mut self, header: &Header) -> Result<()> {
+        for line in header.text()?.split(|byte| *byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if !line.is_empty() {
+                self.write_line(line)?;
+            }
+        }
+        Ok(())
     }
 
     fn write_record(&mut self, header: &Header, rec: &BamRecord) -> Result<()> {
         let line = rec.format_sam(header)?;
-        let rendered = crate::biosyntax::render_sam_ansi(&line, self.line_no)?;
+        self.write_line(&line)
+    }
+
+    fn write_line(&mut self, line: &[u8]) -> Result<()> {
+        let rendered = crate::biosyntax::render_sam_ansi(line, self.line_no)?;
         self.writer
             .write_all(&rendered)
             .map_err(|e| format!("[qbix] could not write colored SAM output: {e}"))?;
@@ -425,7 +453,9 @@ fn should_color_with_terminal(
         return false;
     }
     match color_mode {
+        #[cfg(feature = "biosyntax")]
         ColorMode::Never => false,
+        #[cfg(feature = "biosyntax")]
         ColorMode::Always => true,
         ColorMode::Auto => cfg!(feature = "biosyntax") && output_path == "-" && stdout_is_terminal,
     }
@@ -480,6 +510,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "biosyntax")]
     fn explicit_color_modes_do_not_depend_on_terminal_detection() {
         assert!(should_color_with_terminal(
             OutputFormat::Sam,

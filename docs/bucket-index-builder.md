@@ -32,9 +32,6 @@ changes:
 - `check`
 - `stats`
 
-The in-memory `Index::save()` path is kept as a small-data/reference path and
-uses the same record ordering as the bucketed builder.
-
 ## Defaults
 
 ```text
@@ -257,14 +254,3 @@ qbix_build_index(bam_path, index_path, threads)
 
 It uses the default bucketed build settings.  A future extended C API can add
 explicit build options without breaking the existing function.
-
-## Tests
-
-The test suite covers:
-
-- byte-for-byte equivalence with the in-memory reference path
-- byte-for-byte equivalence with parallel bucket sorting
-- equivalence at `bucket_bits` bounds (`1` and `12`)
-- oversized bucket fail-fast behavior
-- cleanup after an oversized error with flushed bucket temp files
-- existing CLI, Rust API, C API, and end-to-end workflows

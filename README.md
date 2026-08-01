@@ -17,7 +17,9 @@ The index stores:
 - BGZF virtual offsets
 - BAM size, mtime, and header hash for stale-index detection
 
-The `.qbi` file format is documented in [docs/qbi-format.md](docs/qbi-format.md).
+The `.qbi` file-format versions are documented in
+[docs/qbi-format.md](docs/qbi-format.md): v1 uses magic `QBI1`, while the
+experimental v2 uses magic `QBI2`.
 
 `qbix` was inspired by [jts/bri](https://github.com/jts/bri). `.qbi` is not
 compatible with `.bri`. `.qbi` stores QNAME hashes and BGZF virtual offsets
@@ -102,14 +104,15 @@ Create an index:
 qbix index reads.bam
 ```
 
-QBI1 remains the default. An experimental grouped radix index can be built
-explicitly; `get`, `show`, `check`, and `stats` detect either format:
+QBI file-format v1 (`QBI1`) remains the default. The experimental grouped radix
+format v2 (`QBI2`) can be built explicitly; `get`, `show`, `check`, and `stats`
+detect either version:
 
 ```sh
 qbix index --index-format qbi2 reads.bam
 ```
 
-QBI2 is intended for evaluation and is not yet the default or a frozen format.
+QBI v2 is intended for evaluation and is not yet the default or a frozen format.
 Use `--qbi2-radix-bits 8` or `16` to compare its two experimental layouts;
 when omitted, the builder selects P=8 for at most 522,240 records and P=16
 otherwise. This keeps the search-oriented P=16 default for normal large data

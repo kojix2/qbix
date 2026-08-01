@@ -1,8 +1,8 @@
 # Bucketed QBI Index Builder
 
 This document describes the bucketed build path used by `qbix index`.
-It is an implementation detail of index construction and does not change the
-on-disk `.qbi` format.
+It is an implementation detail of index construction shared by QBI file-format
+v1 (`QBI1`) and experimental v2 (`QBI2`).
 
 ## Goal
 
@@ -11,17 +11,19 @@ sorted and wrote the full vector at the end.  For very large BAM files this
 costs roughly `record_count * 16` bytes of memory.  For example, 600 million
 records require about 10 GB just for the record table.
 
-The bucketed builder keeps the `QBI1` format unchanged while reducing peak
-record memory to approximately one bucket at a time during final sorting.
+The bucketed builder keeps each selected file format unchanged while reducing
+peak record memory to approximately one bucket at a time during final sorting.
 
 ## Format Compatibility
 
-The `.qbi` format remains:
+The builder writes one of two on-disk versions:
 
-- magic: `QBI1`
-- header size: 48 bytes
-- record size: 16 bytes
-- records sorted by `(qhash, file_offset)`
+- v1 (`QBI1`): the stable default with a 48-byte header and 16-byte records,
+  documented in [qbi1-format.md](qbi1-format.md)
+- v2 (`QBI2`): the experimental grouped radix layout documented in
+  [qbi2-format.md](qbi2-format.md)
+
+Both preserve the logical ordering by `(qhash, file_offset)`.
 
 Existing load and query operations continue to work without format-specific
 changes:

@@ -19,9 +19,9 @@ L u64 rank entries
 K packed hash suffixes
 ```
 
-Here `N` is the BAM record count, `K` is the distinct hash count, `P` is 8 or
-16, `W = ceil((N + 1) / 64)`, and `L = ceil(W / 8) + 1`. Suffix width is
-`(64 - P) / 8`, giving seven bytes for P=8 and six bytes for P=16.
+Here `N` is the BAM record count, `K` is the distinct hash count, `P` is 8, 12,
+or 16, `W = ceil((N + 1) / 64)`, and `L = ceil(W / 8) + 1`. Suffix width is
+`ceil((64 - P) / 8)`, giving seven bytes for P=8/P=12 and six bytes for P=16.
 
 ## Header
 
@@ -30,8 +30,8 @@ Here `N` is the BAM record count, `K` is the distinct hash count, `P` is 8 or
 | 0 | 4 | bytes | magic | `QBI2` |
 | 4 | 2 | u16 | header_size | `128` |
 | 6 | 2 | u16 | flags | `0` |
-| 8 | 1 | u8 | radix_bits | `8` or `16` |
-| 9 | 1 | u8 | suffix_bytes | `7` or `6`, matching `radix_bits` |
+| 8 | 1 | u8 | radix_bits | `8`, `12`, or `16` |
+| 9 | 1 | u8 | suffix_bytes | `7`, `7`, or `6`, matching `radix_bits` |
 | 10 | 1 | u8 | rank_block_words_log2 | `3` (8 words) |
 | 11 | 1 | u8 | hash_algorithm | `1` (XXH3-64) |
 | 12 | 4 | bytes | reserved | zero |
@@ -66,7 +66,8 @@ population-count, and suffix-order checks before validating BAM records.
 For a hash `h`, `prefix = h >> (64 - P)`. `radix[p]` and `radix[p + 1]`
 delimit the unique suffixes for that prefix. The directory starts at zero, is
 monotonic, and ends at `K`. Packed suffixes are little-endian low bytes of the
-hash and are strictly increasing within each radix range.
+hash and are strictly increasing within each radix range. For P=12, the unused
+high four bits of the seventh suffix byte are zero.
 
 Lookup binary-searches only `suffixes[radix[p]..radix[p + 1]]`. A found suffix
 has unique-hash index `j`.
@@ -101,11 +102,16 @@ therefore read from the BAM and compared with the exact requested QNAME. Hash
 collisions can add candidates but cannot add false verified results. BAM size,
 mtime, and header hash checks are identical to QBI1.
 
-QBI2 readers and writers in this version accept P=8 and P=16. P=16 has 522,240
-more directory bytes but saves one byte per distinct hash, so the exact size
-crossover is `K = 522,240`. At build start `K` is not yet known. The automatic
-builder therefore selects P=8 when `N <= 522,240`, where P=8 is guaranteed to
-be smaller because `K <= N`, and uses the search-oriented P=16 otherwise.
-`--qbi2-radix-bits auto|8|16` can retain or override that choice. `qbix stats`
-reports the smallest layout using the completed index's exact K. QBI1 reading
-and writing remain supported indefinitely.
+QBI2 readers and writers accept P=8, P=12, and P=16. P=12 has the same
+seven-byte suffix as P=8 and costs exactly 30,720 additional directory bytes,
+while dividing each expected search partition by 16. P=16 saves one byte per
+distinct hash and has 522,240 more directory bytes than P=8, so their exact
+size crossover is `K = 522,240`; its crossover with P=12 is `K = 491,520`.
+
+At build start `K` is not yet known. The conservative automatic builder keeps
+choosing between the size endpoints: P=8 when `N <= 522,240`, where P=8 is
+guaranteed smaller because `K <= N`, and search-oriented P=16 otherwise. P=12
+is available explicitly as the speed/space intermediate choice.
+`--qbi2-radix-bits auto|8|12|16` controls the choice. `qbix stats` reports all
+three estimated sizes and the smallest layout using the completed index's
+exact K. QBI1 reading and writing remain supported indefinitely.

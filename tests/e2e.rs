@@ -107,6 +107,7 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
     assert!(json_stdout.contains("\"max\": 2"));
     assert!(json_stdout.contains("\"qbi1\": 112"));
     assert!(json_stdout.contains("\"qbi2_p8\": 2261"));
+    assert!(json_stdout.contains("\"qbi2_p12\": 32981"));
     assert!(json_stdout.contains("\"qbi2_p16\": 524498"));
     assert!(json_stdout.contains("\"smallest_qbi2_radix_bits\": 8"));
 }
@@ -117,15 +118,27 @@ fn qbi2_matches_qbi1_cli_behavior() {
     let bam = temp.path().join("reads.bam");
     let qbi1 = temp.path().join("reads.qbi1");
     let qbi2 = temp.path().join("reads.qbi2");
+    let qbi2_p12 = temp.path().join("reads-p12.qbi2");
     let qbi2_p16 = temp.path().join("reads-p16.qbi2");
     let bam = bam.to_str().unwrap();
     let qbi1 = qbi1.to_str().unwrap();
     let qbi2 = qbi2.to_str().unwrap();
+    let qbi2_p12 = qbi2_p12.to_str().unwrap();
     let qbi2_p16 = qbi2_p16.to_str().unwrap();
     write_unmapped_bam(bam, &["read_b", "read_a", "read_a", "read_c"]);
 
     assert_success(Command::new(qbix()).args(["index", "--index-format", "qbi1", "-i", qbi1, bam]));
     assert_success(Command::new(qbix()).args(["index", "--index-format", "qbi2", "-i", qbi2, bam]));
+    assert_success(Command::new(qbix()).args([
+        "index",
+        "--index-format",
+        "qbi2",
+        "--qbi2-radix-bits",
+        "12",
+        "-i",
+        qbi2_p12,
+        bam,
+    ]));
     assert_success(Command::new(qbix()).args([
         "index",
         "--index-format",
@@ -138,7 +151,12 @@ fn qbi2_matches_qbi1_cli_behavior() {
     ]));
     assert_eq!(fs::metadata(qbi1).unwrap().len(), 112);
     assert_eq!(fs::metadata(qbi2).unwrap().len(), 2_261);
-    assert_eq!(fs::read(qbi2).unwrap()[8], 8);
+    let p8_bytes = fs::read(qbi2).unwrap();
+    assert_eq!(&p8_bytes[6..8], &[0, 0]);
+    assert_eq!(p8_bytes[8], 8);
+    assert_eq!(p8_bytes[10], 3);
+    assert_eq!(fs::metadata(qbi2_p12).unwrap().len(), 32_981);
+    assert_eq!(fs::read(qbi2_p12).unwrap()[8], 12);
     assert_eq!(fs::metadata(qbi2_p16).unwrap().len(), 524_498);
     assert_eq!(fs::read(qbi2_p16).unwrap()[8], 16);
 
@@ -148,7 +166,7 @@ fn qbi2_matches_qbi1_cli_behavior() {
     assert!(qbi2_show.status.success());
     assert_eq!(qbi2_show.stdout, qbi1_show.stdout);
 
-    for index in [qbi1, qbi2] {
+    for index in [qbi1, qbi2, qbi2_p12, qbi2_p16] {
         assert_success(Command::new(qbix()).args(["check", "--full", "-i", index, bam]));
     }
     let get = Command::new(qbix())

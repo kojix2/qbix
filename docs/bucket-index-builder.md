@@ -208,12 +208,13 @@ bucket splitting.
 
 ```sh
 qbix index --memory 512M --bucket-bits 8 --temp-dir DIR reads.bam
-qbix index --index-format qbi2 --qbi2-radix-bits 16 reads.bam
+qbix index --index-format qbi2 --qbi2-radix-bits 12 reads.bam
 ```
 
 For QBI2, omitting `--qbi2-radix-bits` (or specifying `auto`) selects P=8 when
-the BAM has at most 522,240 records and P=16 otherwise. Explicit `8` and `16`
-values override this conservative automatic choice.
+the BAM has at most 522,240 records and P=16 otherwise. Explicit `8`, `12`,
+and `16` values override this conservative automatic choice; P=12 is the
+speed/space intermediate option.
 
 `--memory` accepts integer values with optional `K`, `M`, or `G` suffixes.
 

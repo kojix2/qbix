@@ -17,9 +17,11 @@ fn benchmark_qbi_lookup_smoke() {
     let record_count = HASH_COUNT * RECORDS_PER_HASH;
     let qbi1_path = temp_index_path("qbi1");
     let qbi2_p8_path = temp_index_path("qbi2-p8");
+    let qbi2_p12_path = temp_index_path("qbi2-p12");
     let qbi2_p16_path = temp_index_path("qbi2-p16");
     let qbi1_build = write_index(&qbi1_path, IndexFormat::Qbi1, 16);
     let qbi2_p8_build = write_index(&qbi2_p8_path, IndexFormat::Qbi2, 8);
+    let qbi2_p12_build = write_index(&qbi2_p12_path, IndexFormat::Qbi2, 12);
     let qbi2_p16_build = write_index(&qbi2_p16_path, IndexFormat::Qbi2, 16);
     let (present, absent) = queries();
 
@@ -29,6 +31,7 @@ fn benchmark_qbi_lookup_smoke() {
     for (name, path, build_time) in [
         ("QBI1", &qbi1_path, qbi1_build),
         ("QBI2-P8", &qbi2_p8_path, qbi2_p8_build),
+        ("QBI2-P12", &qbi2_p12_path, qbi2_p12_build),
         ("QBI2-P16", &qbi2_p16_path, qbi2_p16_build),
     ] {
         let index = Index::load(None, Some(path.to_str().unwrap()), None).unwrap();
@@ -52,7 +55,7 @@ fn benchmark_qbi_lookup_smoke() {
         );
     }
 
-    for path in [qbi1_path, qbi2_p8_path, qbi2_p16_path] {
+    for path in [qbi1_path, qbi2_p8_path, qbi2_p12_path, qbi2_p16_path] {
         let _ = std::fs::remove_file(path);
     }
 }

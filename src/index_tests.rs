@@ -12,6 +12,7 @@ fn qbi2_auto_radix_uses_only_guaranteed_size_boundary() {
         16
     );
     assert_eq!(resolve_qbi2_radix_bits(Some(8), usize::MAX), 8);
+    assert_eq!(resolve_qbi2_radix_bits(Some(12), usize::MAX), 12);
     assert_eq!(resolve_qbi2_radix_bits(Some(16), 0), 16);
 }
 
@@ -252,6 +253,29 @@ fn qbi2_defers_full_suffix_validation_until_requested() {
     let loaded = Index::load(None, Some(path.to_str().unwrap()), None).unwrap();
     let error = loaded.validate_full_structure().unwrap_err();
     assert!(error.contains("suffixes are not strictly sorted"));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn qbi2_p12_rejects_nonzero_suffix_padding_on_full_validation() {
+    let path = temp_index_path("qbi2-p12-suffix-padding");
+    let records = [Record {
+        qhash: 0x1234_5678_9abc_def0,
+        file_offset: 10,
+    }];
+    write_qbi2_records(&path, &records, 12);
+
+    let bytes = std::fs::read(&path).unwrap();
+    let suffix_offset = read_u64_le_usize_from(&bytes[96..104], "suffix offset").unwrap();
+    let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+    file.seek(SeekFrom::Start((suffix_offset + 6) as u64))
+        .unwrap();
+    file.write_all(&[0xf0]).unwrap();
+    drop(file);
+
+    let loaded = Index::load(None, Some(path.to_str().unwrap()), None).unwrap();
+    let error = loaded.validate_full_structure().unwrap_err();
+    assert!(error.contains("suffix has nonzero padding bits"));
     let _ = std::fs::remove_file(path);
 }
 

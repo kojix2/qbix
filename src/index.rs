@@ -651,9 +651,9 @@ impl BucketIndexBuilder {
         }
         validate_bucket_bits(bucket_bits)?;
         if format == IndexFormat::Qbi2
-            && qbi2_radix_bits.is_some_and(|bits| !matches!(bits, 8 | 16))
+            && qbi2_radix_bits.is_some_and(|bits| !matches!(bits, 8 | 12 | 16))
         {
-            return Err("[qbix] QBI2 radix bits must be 8 or 16".to_string());
+            return Err("[qbix] QBI2 radix bits must be 8, 12, or 16".to_string());
         }
 
         let output_path = PathBuf::from(output_index);

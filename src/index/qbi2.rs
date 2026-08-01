@@ -28,7 +28,7 @@ struct Qbi2Layout {
 
 impl Qbi2Layout {
     fn new(record_count: usize, radix_bits: u8) -> Result<Self> {
-        if !matches!(radix_bits, 8 | 16) {
+        if !matches!(radix_bits, 8 | 12 | 16) {
             return Err(format!("[qbix] unsupported QBI2 radix bits: {radix_bits}"));
         }
         let group_word_count = record_count
@@ -76,7 +76,7 @@ pub(super) fn estimated_size(
     unique_hash_count: usize,
     radix_bits: u8,
 ) -> Result<u64> {
-    let suffix_bytes = usize::from((64 - radix_bits) / 8);
+    let suffix_bytes = usize::from((64 - radix_bits).div_ceil(8));
     let size =
         Qbi2Layout::new(record_count, radix_bits)?.file_size(unique_hash_count, suffix_bytes)?;
     u64::try_from(size).map_err(|_| "[qbix] estimated QBI2 size overflow".to_string())
@@ -121,7 +121,7 @@ impl MappedQbi2 {
         }
         let radix_bits = mmap[8];
         let suffix_bytes = usize::from(mmap[9]);
-        if !matches!((radix_bits, suffix_bytes), (8, 7) | (16, 6)) {
+        if !matches!((radix_bits, suffix_bytes), (8, 7) | (12, 7) | (16, 6)) {
             return Err(format!(
                 "[qbix] unsupported QBI2 radix/suffix parameters: {radix_bits}/{suffix_bytes}"
             ));
@@ -269,6 +269,12 @@ impl MappedQbi2 {
             let mut last = None;
             for index in start..end {
                 let suffix = self.suffix(index)?;
+                let suffix_mask = (1u64 << (64 - self.radix_bits)) - 1;
+                if suffix > suffix_mask {
+                    return Err(
+                        "[qbix] corrupt QBI2 index: suffix has nonzero padding bits".to_string()
+                    );
+                }
                 if last.is_some_and(|value| value >= suffix) {
                     return Err(
                         "[qbix] corrupt QBI2 index: suffixes are not strictly sorted".to_string(),
@@ -619,7 +625,7 @@ impl Qbi2Writer {
         // K is known only after consuming sorted records. Keep all N-derived
         // sections first and the K-sized suffix array last for one-pass output.
         let layout = Qbi2Layout::new(record_count, radix_bits)?;
-        let suffix_bytes = usize::from((64 - radix_bits) / 8);
+        let suffix_bytes = usize::from((64 - radix_bits).div_ceil(8));
         Ok(Self {
             record_count,
             bam_metadata,

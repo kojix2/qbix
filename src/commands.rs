@@ -657,6 +657,7 @@ struct QnameHashStats {
     mean_records_per_hash: f64,
     qbi1_estimated_size: u64,
     qbi2_p8_estimated_size: u64,
+    qbi2_p12_estimated_size: u64,
     qbi2_p16_estimated_size: u64,
 }
 
@@ -695,6 +696,7 @@ fn compute_qname_hash_stats(index: &Index) -> Result<QnameHashStats> {
         mean_records_per_hash,
         qbi1_estimated_size: estimated_qbi1_size(records)?,
         qbi2_p8_estimated_size: estimated_qbi2_size(records, distinct_hashes, 8)?,
+        qbi2_p12_estimated_size: estimated_qbi2_size(records, distinct_hashes, 12)?,
         qbi2_p16_estimated_size: estimated_qbi2_size(records, distinct_hashes, 16)?,
     })
 }
@@ -735,6 +737,11 @@ fn print_stats_text(
         "  QBI2 (P=8):\t{} ({:.1}% vs QBI1)",
         stats.qbi2_p8_estimated_size,
         estimated_saving(stats.qbi1_estimated_size, stats.qbi2_p8_estimated_size)
+    );
+    println!(
+        "  QBI2 (P=12):\t{} ({:.1}% vs QBI1)",
+        stats.qbi2_p12_estimated_size,
+        estimated_saving(stats.qbi1_estimated_size, stats.qbi2_p12_estimated_size)
     );
     println!(
         "  QBI2 (P=16):\t{} ({:.1}% vs QBI1)",
@@ -789,6 +796,7 @@ fn print_stats_json(
     println!("  \"estimated_sizes\": {{");
     println!("    \"qbi1\": {},", stats.qbi1_estimated_size);
     println!("    \"qbi2_p8\": {},", stats.qbi2_p8_estimated_size);
+    println!("    \"qbi2_p12\": {},", stats.qbi2_p12_estimated_size);
     println!("    \"qbi2_p16\": {}", stats.qbi2_p16_estimated_size);
     println!("  }},");
     println!(
@@ -799,6 +807,10 @@ fn print_stats_json(
     println!(
         "    \"qbi2_p8\": {:.6},",
         estimated_saving(stats.qbi1_estimated_size, stats.qbi2_p8_estimated_size)
+    );
+    println!(
+        "    \"qbi2_p12\": {:.6},",
+        estimated_saving(stats.qbi1_estimated_size, stats.qbi2_p12_estimated_size)
     );
     println!(
         "    \"qbi2_p16\": {:.6}",
@@ -830,11 +842,15 @@ fn estimated_saving(qbi1: u64, qbi2: u64) -> f64 {
 }
 
 fn smallest_qbi2_radix_bits(stats: &QnameHashStats) -> u8 {
-    if stats.qbi2_p8_estimated_size <= stats.qbi2_p16_estimated_size {
-        8
-    } else {
-        16
-    }
+    [
+        (8, stats.qbi2_p8_estimated_size),
+        (12, stats.qbi2_p12_estimated_size),
+        (16, stats.qbi2_p16_estimated_size),
+    ]
+    .into_iter()
+    .min_by_key(|(_, size)| *size)
+    .map(|(bits, _)| bits)
+    .unwrap_or(8)
 }
 
 fn json_escape(value: &str) -> String {

@@ -113,11 +113,10 @@ qbix index --index-format qbi2 reads.bam
 ```
 
 QBI v2 is intended for evaluation and is not yet the default or a frozen format.
-Use `--qbi2-radix-bits 8` or `16` to compare its two experimental layouts;
-when omitted, the builder selects P=8 for at most 522,240 records and P=16
-otherwise. This keeps the search-oriented P=16 default for normal large data
-while avoiding its 512 KiB directory on indexes that are guaranteed to be
-smaller with P=8. An explicit value always takes precedence.
+Use `--qbi2-radix-bits 8`, `12`, or `16` to compare its experimental layouts.
+P=12 is the speed/space intermediate choice. When omitted, the conservative
+automatic policy selects P=8 for at most 522,240 records and P=16 otherwise.
+An explicit value always takes precedence.
 
 This writes:
 

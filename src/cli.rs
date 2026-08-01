@@ -564,7 +564,7 @@ fn index_format_arg() -> Arg {
 fn qbi2_radix_bits_arg() -> Arg {
     Arg::new(ARG_QBI2_RADIX_BITS)
         .long("qbi2-radix-bits")
-        .value_name("auto|8|16")
+        .value_name("auto|8|12|16")
         .help("QBI2 radix prefix width; default selects 8 for small indexes, otherwise 16")
 }
 
@@ -575,8 +575,9 @@ fn qbi2_radix_bits(matches: &ArgMatches) -> Result<Option<u8>> {
     match value {
         value if value.eq_ignore_ascii_case("auto") => Ok(None),
         value if value == "8" => Ok(Some(8)),
+        value if value == "12" => Ok(Some(12)),
         value if value == "16" => Ok(Some(16)),
-        _ => Err("[qbix] QBI2 radix bits must be auto, 8, or 16".to_string()),
+        _ => Err("[qbix] QBI2 radix bits must be auto, 8, 12, or 16".to_string()),
     }
 }
 
@@ -904,6 +905,24 @@ mod tests {
             action,
             Action::Index {
                 qbi2_radix_bits: Some(8),
+                ..
+            }
+        ));
+
+        let action = parse_args(strings([
+            "qbix",
+            "index",
+            "--index-format",
+            "qbi2",
+            "--qbi2-radix-bits",
+            "12",
+            "reads.bam",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            action,
+            Action::Index {
+                qbi2_radix_bits: Some(12),
                 ..
             }
         ));

@@ -79,6 +79,7 @@ pub(crate) fn resolve_qbi2_radix_bits(requested: Option<u8>, record_count: usize
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IndexFormat {
     #[default]
     Qbi1,

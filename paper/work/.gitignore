@@ -4,6 +4,7 @@
 __pycache__/
 /data/**/*.bam
 /data/**/*.bam.bai
+/data/**/*.bam.csi
 /data/**/*.bri
 /data/**/*.atlantool-index/
 /data/**/.source-index-*/

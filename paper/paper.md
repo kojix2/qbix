@@ -45,7 +45,7 @@ For coordinate-sorted BAM files, `bri` introduced an index that stores complete 
 
 A QBI file contains a 128-byte header and five data sections: a radix directory, a hash-suffix array, a group-start bit vector, a rank directory, and an offset array. The header records the position and size of each section, the BAM record count, the number of unique hashes, the radix parameters, and information about the source BAM file.
 
-Each 64-bit QNAME hash `h` is divided into a radix prefix formed by the high `P` bits and a hash suffix formed by the remaining bits. The radix directory records the start and end positions in the hash-suffix array for each prefix. The hash-suffix array stores the suffix of each unique hash once, in the order of the original 64-bit hashes. QBI currently supports `P = 8` and `P = 16`.
+Each 64-bit QNAME hash `h` is divided into a radix prefix formed by the high `P` bits and a hash suffix formed by the remaining bits. The radix directory records the start and end positions in the hash-suffix array for each prefix. The hash-suffix array stores the suffix of each unique hash once, in the order of the original 64-bit hashes. QBI currently supports `P = 8`, `P = 12`, and `P = 16`.
 
 The offset array stores one 64-bit BGZF virtual offset for each BAM record. The offsets are ordered by hash and then by virtual offset within each hash group. One hash may correspond to several offsets.
 
@@ -71,42 +71,44 @@ QNAMEs can be supplied as arguments, from a file, or through standard input, and
 
 # Evaluation
 
-Current measurements use HG002 chromosome 21 subsets from Illumina, PacBio HiFi, and Oxford Nanopore data. Values are medians, and timings below the timer resolution are reported as `<0.01 s`. QBI was built with `P = 16`. The final evaluation will repeat the same measurements on public whole-genome BAM files and will report accession, BAM size, record count, unique QNAME count, hardware, software versions, commands, repetition count, and cache conditions.
+Measurements used chromosome 21 subsets extracted with `samtools view -bh` from three public HG002 alignment BAM files: GIAB Illumina HiSeq 2x250 Novoalign, GIAB PacBio HiFi Revio 48x (BioProject PRJNA1028149), and Oxford Nanopore R10.4.1 SUP from ONT Open Data. The Illumina source header declared `SO:unsorted`; its chromosome subset was therefore sorted again with SAMtools before measurement. The resulting BAM sizes and record counts were 1.52 GiB and 11,145,955 records for Illumina, 962.3 MiB and 133,605 records for PacBio HiFi, and 4.90 GiB and 545,839 records for Oxford Nanopore.
+
+Benchmarks ran on Ubuntu Linux 26.04 with an AMD Ryzen 7 5700X (8 cores, 16 threads), 60 GiB RAM, and a Samsung 870 QVO SATA SSD using qbix 0.0.9, SAMtools/HTSlib 1.24, and Atlantool release `release-983975f`. QBI was built with `P = 16`, one BGZF thread, one sorting thread, a 512 MiB sorting-memory setting, and eight bucket bits. Index values are medians of three builds; lookup values are medians of five independently sampled query sets generated with seed 20260730. The BAM was read once before timing, and the filesystem cache was not explicitly cleared. Timings below the 0.01 s timer resolution are reported as `<0.01 s`. Commands, manifests, query checksums, and per-replicate results are recorded by the benchmark workflow in `paper/work`.
 
 ## Index construction
 
-Table 1 reports the qbix measurements available so far. Atlantool construction measurements and temporary-disk use remain as placeholders.
+Table 1 reports index construction measurements. Peak temporary-disk use was sampled every 0.25 s while each tool ran; a zero value means that no transient file was observed at that sampling interval.
 
 | Dataset | Tool | Build time | Peak RSS | Temporary disk | Index size |
 |:--|:--|--:|--:|--:|--:|
-| Illumina chr21 | qbix | 14.32 s | 21.9 MiB | `[TO BE MEASURED]` | 124.8 MB |
-|  | Atlantool | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` |
-| PacBio HiFi chr21 | qbix | 4.40 s | 8.4 MiB | `[TO BE MEASURED]` | 2.4 MB |
-|  | Atlantool | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` |
-| Oxford Nanopore chr21 | qbix | 19.04 s | 20.5 MiB | `[TO BE MEASURED]` | 7.1 MB |
-|  | Atlantool | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` | `[TO BE MEASURED]` |
+| Illumina chr21 | qbix | 13.58 s | 22.5 MiB | 170.1 MiB | 119.0 MiB |
+|  | Atlantool | 29.99 s | 717.4 MiB | 105.9 MiB | 103.9 MiB |
+| PacBio HiFi chr21 | qbix | 4.11 s | 8.9 MiB | 1.9 MiB | 2.3 MiB |
+|  | Atlantool | 8.71 s | 291.7 MiB | 0 B | 1.4 MiB |
+| Oxford Nanopore chr21 | qbix | 17.98 s | 21.3 MiB | 8.0 MiB | 6.8 MiB |
+|  | Atlantool | 33.88 s | 542.2 MiB | 10.4 MiB | 11.2 MiB |
 
-A separate PacBio HiFi whole-genome run compared QBI representations. Build times were similar: 286.11 s for QBI1 and 288.23 s for QBI with `P = 16`. The corresponding index sizes were 151.0 MB and 131.5 MB.
+On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in the same environment gave median build times of 4.11 s for QBI1 and 4.13 s for QBI2 with `P = 16`. The corresponding index sizes were 2.0 MiB and 2.3 MiB. At this subset size, the fixed radix directory makes QBI2 slightly larger than QBI1.
 
 ## End-to-end lookup
 
-Table 2 reports representative present-QNAME measurements. Timings include index lookup, BAM access, QNAME verification, and output. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs and will be distributed with the raw results.
+Table 2 reports representative present-QNAME measurements. Timings include index lookup, BAM access, QNAME verification, and SAM formatting to `/dev/null`. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs.
 
 | Dataset | QNAMEs | qbix, query order | Atlantool | `samtools view -N` full scan |
 |:--|--:|--:|--:|--:|
-| Illumina chr21 | 1 | <0.01 s | 0.03 s | 5.40 s |
-|  | 100 | 0.01 s | 0.15 s | 5.39 s |
-|  | 10,000 | 1.06 s | 6.12 s | 5.36 s |
-| PacBio HiFi chr21 | 1 | <0.01 s | <0.01 s | 4.09 s |
-|  | 100 | 0.01 s | 0.08 s | 4.05 s |
-|  | 10,000 | 0.74 s | 3.31 s | 4.16 s |
-| Oxford Nanopore chr21 | 1 | 0.01 s | 0.24 s | 17.91 s |
-|  | 100 | 0.03 s | 0.33 s | 18.03 s |
-|  | 10,000 | 1.70 s | 6.03 s | 18.19 s |
+| Illumina chr21 | 1 | <0.01 s | 0.02 s | 4.85 s |
+|  | 100 | 0.01 s | 0.14 s | 4.86 s |
+|  | 10,000 | 0.96 s | 5.66 s | 4.85 s |
+| PacBio HiFi chr21 | 1 | <0.01 s | <0.01 s | 3.87 s |
+|  | 100 | 0.01 s | 0.07 s | 3.84 s |
+|  | 10,000 | 0.70 s | 3.06 s | 3.90 s |
+| Oxford Nanopore chr21 | 1 | 0.01 s | 0.23 s | 16.93 s |
+|  | 100 | 0.03 s | 0.32 s | 16.97 s |
+|  | 10,000 | 1.58 s | 5.54 s | 17.16 s |
 
-For 10,000 present QNAMEs, BAM-order mode reduced qbix time to 0.98 s for Illumina, 0.72 s for PacBio HiFi, and 1.56 s for Oxford Nanopore. For 10,000 absent QNAMEs, query-order lookup took `<0.01 s`, `<0.01 s`, and 0.01 s, respectively. The corresponding Atlantool and `samtools view -N` absent-query measurements remain `[TO BE MEASURED]`.
+For 10,000 present QNAMEs, BAM-order mode reduced qbix time to 0.89 s for Illumina, 0.67 s for PacBio HiFi, and 1.47 s for Oxford Nanopore. For 10,000 absent QNAMEs, query-order lookup took `<0.01 s`, `<0.01 s`, and 0.01 s, respectively. The corresponding Atlantool times were 2.78 s, 2.09 s, and 2.35 s, while `samtools view -N` took 4.86 s, 3.83 s, and 16.94 s.
 
-Correctness will be checked across all tools against a complete `samtools view -N` scan after canonicalizing record order and SAM formatting. Secondary and supplementary records must match. Cross-tool correctness hashes are `[TO BE MEASURED]`. Benchmark scripts, query sets, commands, and raw results will be included in the repository.
+Correctness was checked against a complete `samtools view -N` scan after normalizing record order and SAM optional-tag order. For the 10,000-QNAME sets, qbix query-order, qbix BAM-order, Atlantool, and SAMtools produced identical record counts and SHA-256 hashes: 19,971 records and `8ed699da...27d8e8` for Illumina, 10,167 records and `e414c34d...bd4b34` for PacBio HiFi, and 15,594 records and `336cbbab...885d1` for Oxford Nanopore. All four methods returned zero records for the absent-QNAME sets.
 
 # Research impact statement
 

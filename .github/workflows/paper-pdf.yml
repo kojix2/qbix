@@ -19,22 +19,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Build PDF
-        uses: xu-cheng/latex-action@v4
+      - name: Build JOSS PDF
+        uses: xuanxu/publishing-artifacts-action@main
         with:
-          root_file: paper.tex
-          working_directory: paper
-          os: debian
-          extra_system_packages: "pandoc lmodern"
-          pre_compile: |
-            pandoc paper.md \
-              --from markdown \
-              --to latex \
-              --standalone \
-              --citeproc \
-              --bibliography paper.bib \
-              --resource-path . \
-              --output paper.tex
+          journal: joss
+          paper-path: paper/paper.md
+          args: "-o pdf -p"
 
       - name: Upload PDF
         uses: actions/upload-artifact@v7

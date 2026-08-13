@@ -15,6 +15,11 @@ affiliations:
     name: Independent researcher
 date: 2 August 2026
 bibliography: paper.bib
+documentclass: article
+fontsize: 10pt
+papersize: a4
+header-includes:
+  - \usepackage[a4paper,margin=24mm]{geometry}
 ---
 
 # Summary
@@ -92,7 +97,11 @@ On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in th
 
 ## End-to-end lookup
 
-Table 2 reports representative present-QNAME measurements. Timings include index lookup, BAM access, QNAME verification, and SAM formatting to `/dev/null`. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs.
+The scaling curves show the different cost profiles of indexed lookup and a full BAM scan. qbix was fastest or tied for fastest throughout the measured range. Its time increased with the number of present QNAMEs, whereas `samtools view -N` remained nearly constant because it scanned the complete input for every query set. Atlantool also avoided a full scan, but increased more rapidly than qbix on these datasets.
+
+![End-to-end lookup time for present QNAMEs. Points are medians of five query sets; lines connect measured query counts. Values recorded as 0.00 s are shown at 0.005 s solely for logarithmic plotting.](figures/query-scaling.png){width=100%}
+
+Table 2 reports representative values from the same present-QNAME measurements. Timings include index lookup, BAM access, QNAME verification, and SAM formatting to `/dev/null`. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs.
 
 | Dataset | QNAMEs | qbix, query order | Atlantool | `samtools view -N` full scan |
 |:--|--:|--:|--:|--:|

@@ -82,16 +82,16 @@ Benchmarks ran on Ubuntu Linux 26.04 with an AMD Ryzen 7 5700X (8 cores, 16 thre
 
 ## Index construction
 
-Table 1 reports index construction measurements. Peak temporary-disk use was sampled every 0.25 s while each tool ran; a zero value means that no transient file was observed at that sampling interval.
+Table 1 reports index construction measurements for the chromosome 21 subsets. Peak temporary-disk use was sampled every 0.25 s while each tool ran; a zero value means that no transient file was observed at that sampling interval.
 
-| Dataset | Tool | Build time | Peak RSS | Temporary disk | Index size |
+| Dataset | Tool | Build (s) | RSS (MiB) | Temp (MiB) | Index (MiB) |
 |:--|:--|--:|--:|--:|--:|
-| Illumina chr21 | qbix | 13.58 s | 22.5 MiB | 170.1 MiB | 119.0 MiB |
-|  | Atlantool | 29.99 s | 717.4 MiB | 105.9 MiB | 103.9 MiB |
-| PacBio HiFi chr21 | qbix | 4.11 s | 8.9 MiB | 1.9 MiB | 2.3 MiB |
-|  | Atlantool | 8.71 s | 291.7 MiB | 0 B | 1.4 MiB |
-| Oxford Nanopore chr21 | qbix | 17.98 s | 21.3 MiB | 8.0 MiB | 6.8 MiB |
-|  | Atlantool | 33.88 s | 542.2 MiB | 10.4 MiB | 11.2 MiB |
+| Illumina | qbix | 13.58 | 22.5 | 170.1 | 119.0 |
+|  | Atlantool | 29.99 | 717.4 | 105.9 | 103.9 |
+| PacBio HiFi | qbix | 4.11 | 8.9 | 1.9 | 2.3 |
+|  | Atlantool | 8.71 | 291.7 | 0.0 | 1.4 |
+| ONT | qbix | 17.98 | 21.3 | 8.0 | 6.8 |
+|  | Atlantool | 33.88 | 542.2 | 10.4 | 11.2 |
 
 On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in the same environment gave median build times of 4.11 s for QBI1 and 4.13 s for QBI2 with `P = 16`. The corresponding index sizes were 2.0 MiB and 2.3 MiB. At this subset size, the fixed radix directory makes QBI2 slightly larger than QBI1.
 
@@ -101,19 +101,19 @@ The scaling curves show the different cost profiles of indexed lookup and a full
 
 ![End-to-end lookup time for present QNAMEs. Points are medians of five query sets; lines connect measured query counts. Values recorded as 0.00 s are shown at 0.005 s solely for logarithmic plotting.](figures/query-scaling.png){width=100%}
 
-Table 2 reports representative values from the same present-QNAME measurements. Timings include index lookup, BAM access, QNAME verification, and SAM formatting to `/dev/null`. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs.
+Table 2 reports representative times from the same present-QNAME measurements. The qbix column uses query order and the SAMtools column uses a full scan. Timings include index lookup, BAM access, QNAME verification, and SAM formatting to `/dev/null`. The complete benchmark also includes query sets of 10 and 1,000 QNAMEs.
 
-| Dataset | QNAMEs | qbix, query order | Atlantool | `samtools view -N` full scan |
+| Dataset | QNAMEs | qbix (s) | Atlantool (s) | SAMtools (s) |
 |:--|--:|--:|--:|--:|
-| Illumina chr21 | 1 | <0.01 s | 0.02 s | 4.85 s |
-|  | 100 | 0.01 s | 0.14 s | 4.86 s |
-|  | 10,000 | 0.96 s | 5.66 s | 4.85 s |
-| PacBio HiFi chr21 | 1 | <0.01 s | <0.01 s | 3.87 s |
-|  | 100 | 0.01 s | 0.07 s | 3.84 s |
-|  | 10,000 | 0.70 s | 3.06 s | 3.90 s |
-| Oxford Nanopore chr21 | 1 | 0.01 s | 0.23 s | 16.93 s |
-|  | 100 | 0.03 s | 0.32 s | 16.97 s |
-|  | 10,000 | 1.58 s | 5.54 s | 17.16 s |
+| Illumina | 1 | <0.01 | 0.02 | 4.85 |
+|  | 100 | 0.01 | 0.14 | 4.86 |
+|  | 10,000 | 0.96 | 5.66 | 4.85 |
+| PacBio HiFi | 1 | <0.01 | <0.01 | 3.87 |
+|  | 100 | 0.01 | 0.07 | 3.84 |
+|  | 10,000 | 0.70 | 3.06 | 3.90 |
+| ONT | 1 | 0.01 | 0.23 | 16.93 |
+|  | 100 | 0.03 | 0.32 | 16.97 |
+|  | 10,000 | 1.58 | 5.54 | 17.16 |
 
 For 10,000 present QNAMEs, BAM-order mode reduced qbix time to 0.89 s for Illumina, 0.67 s for PacBio HiFi, and 1.47 s for Oxford Nanopore. For 10,000 absent QNAMEs, query-order lookup took `<0.01 s`, `<0.01 s`, and 0.01 s, respectively. The corresponding Atlantool times were 2.78 s, 2.09 s, and 2.35 s, while `samtools view -N` took 4.86 s, 3.83 s, and 16.94 s.
 

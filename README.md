@@ -21,6 +21,8 @@ The `.qbi` file-format versions are documented in
 [docs/qbi-format.md](docs/qbi-format.md): v1 uses magic `QBI1`, while the
 experimental v2 uses magic `QBI2`.
 
+Draft paper (PDF): [qbix: An index for searching coordinate-sorted BAM files by read name](https://kojix2.github.io/qbix/paper/paper.pdf)
+
 `qbix` was inspired by [jts/bri](https://github.com/jts/bri). `.qbi` is not
 compatible with `.bri`. `.qbi` stores QNAME hashes and BGZF virtual offsets
 instead of names. Lookup candidates are checked against BAM `QNAME` before output.
@@ -340,4 +342,3 @@ int main(void) {
     qbix_index_close(idx);
     return 0;
 }
-```

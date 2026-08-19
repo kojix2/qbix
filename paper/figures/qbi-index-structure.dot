@@ -1,0 +1,96 @@
+// Figure 1 source. Render from the repository root with:
+// dot -Tpng:cairo -Gdpi=180 \
+//   -o paper/figures/qbi-index-structure.png \
+//   paper/figures/qbi-index-structure.dot
+digraph qbi_index_structure {
+    graph [
+        rankdir=TB,
+        bgcolor="white",
+        pad=0.15,
+        nodesep=0.25,
+        ranksep=0.48,
+        splines=spline,
+        fontname="DejaVu Sans"
+    ];
+    node [
+        shape=box,
+        style="rounded",
+        color="#202020",
+        fontcolor="#111111",
+        fontname="DejaVu Sans",
+        fontsize=10.5,
+        margin="0.09,0.07",
+        penwidth=1.0
+    ];
+    edge [color="#202020", penwidth=1.0, arrowsize=0.65];
+
+    structure [
+        shape=plain,
+        label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="7">
+                <TR>
+                    <TD COLSPAN="2"><FONT POINT-SIZE="18"><B>QBI2 Index Structure</B></FONT></TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT" WIDTH="195"><FONT POINT-SIZE="13">1. Header</FONT></TD>
+                    <TD ALIGN="LEFT" WIDTH="210">section offsets, counts, parameters</TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT"><FONT POINT-SIZE="13">2. Radix directory</FONT></TD>
+                    <TD ALIGN="LEFT">prefix &#8594; search range</TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT"><FONT POINT-SIZE="13">3. Hash-suffix array</FONT></TD>
+                    <TD ALIGN="LEFT">unique hash suffixes</TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT"><FONT POINT-SIZE="13">4. Group-start bit vector</FONT></TD>
+                    <TD ALIGN="LEFT">group boundaries</TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT"><FONT POINT-SIZE="13">5. Rank directory</FONT></TD>
+                    <TD ALIGN="LEFT">fast select support</TD>
+                </TR>
+                <TR>
+                    <TD BORDER="1" ALIGN="LEFT"><FONT POINT-SIZE="13">6. Offset array</FONT></TD>
+                    <TD ALIGN="LEFT">BGZF virtual offsets</TD>
+                </TR>
+            </TABLE>
+        >
+    ];
+
+    flow_title [shape=plain, fontsize=17, label=<<B>Lookup Flow</B>>];
+    qname [group="c1", label="QNAME"];
+    hash [group="c2", label="XXH3-64\nhash"];
+    split [group="c3", label="split into\nprefix + suffix"];
+    narrow [group="c4", label="radix directory\nnarrows suffix\nrange"];
+    search [group="c1", label="search hash-\nsuffix array"];
+    boundary [group="c2", label="find group boundary\nvia bit vector +\nrank directory"];
+    range [group="c3", label="read offset\nrange"];
+    verify [group="c4", label="seek BAM records\nand verify QNAME"];
+
+    structure -> flow_title [style=invis, weight=20];
+    flow_title -> hash [style=invis, weight=10];
+    flow_title -> split [style=invis, weight=10];
+    {
+        rank=same;
+        qname -> hash -> split -> narrow;
+    }
+    {
+        rank=same;
+        search -> boundary -> range -> verify;
+    }
+    qname -> search [style=invis, weight=30];
+    hash -> boundary [style=invis, weight=30];
+    split -> range [style=invis, weight=30];
+    narrow -> verify [style=invis, weight=30];
+    narrow -> search [constraint=false, minlen=2];
+
+    note [
+        shape=plain,
+        fontsize=11,
+        label="QBI2 stores each hash once and links it to one or more offsets."
+    ];
+    boundary -> note [style=invis, weight=10];
+    range -> note [style=invis, weight=10];
+}

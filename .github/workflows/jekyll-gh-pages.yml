@@ -1,5 +1,5 @@
-# Sample workflow for building and deploying a Jekyll site to GitHub Pages
-name: Deploy Jekyll with GitHub Pages dependencies preinstalled
+# Build the Jekyll site together with the paper PDF and deploy to GitHub Pages
+name: Deploy Jekyll site and paper PDF to GitHub Pages
 
 on:
   # Runs on pushes targeting the default branch
@@ -27,7 +27,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+      - name: Generate preprint LaTeX
+        uses: xuanxu/publishing-artifacts-action@main
+        with:
+          journal: joss
+          paper-path: paper/paper.md
+          args: "-o preprint"
+      - name: Build preprint PDF
+        uses: xu-cheng/latex-action@v4
+        with:
+          root_file: paper.preprint.tex
+          working_directory: paper
+          os: debian
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Build with Jekyll
@@ -35,6 +47,9 @@ jobs:
         with:
           source: ./
           destination: ./_site
+      - name: Add the paper PDF to the site
+        run: |
+          mv paper/paper.preprint.pdf _site/paper.pdf
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
 

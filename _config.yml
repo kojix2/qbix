@@ -20,6 +20,7 @@ exclude:
   - LICENSE
   - build.rs
   - include/
+  - paper/
   - renovate.json
   - src/
   - target/

@@ -9,10 +9,6 @@ tags:
   - command-line-utilities
 authors:
   - name: kojix2
-    affiliation: '1'
-affiliations:
-  - index: 1
-    name: Independent researcher
 date: 2 August 2026
 bibliography: paper.bib
 documentclass: article

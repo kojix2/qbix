@@ -1,5 +1,5 @@
 ---
-title: 'qbix: An index for searching coordinate-sorted BAM files by read name'
+title: 'qbix: Read-name lookup for coordinate-sorted BAM files'
 tags:
   - bioinformatics
   - genomics

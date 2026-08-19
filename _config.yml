@@ -20,7 +20,14 @@ exclude:
   - LICENSE
   - build.rs
   - include/
-  - paper/
+  - paper/data/
+  - paper/figures/
+  - paper/notes/
+  - paper/scripts/
+  - paper/work/
+  - paper/paper.bib
+  - paper/paper.md
+  - paper/README.md
   - renovate.json
   - src/
   - target/

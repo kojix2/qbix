@@ -26,7 +26,7 @@ BAM files are commonly sorted by genomic coordinate, which allows efficient acce
 
 # Statement of need
 
-Coordinate-based analysis often identifies a read at a genomic region of interest, but the next step is to examine the read as a whole. Other records with the same QNAME may describe a distant breakpoint, an alternative mapping, or another segment of a chimeric alignment. This is especially important for long reads that span complex rearrangements or sequences that are poorly represented in the reference genome.
+Coordinate-based analysis often identifies a read at a genomic region of interest. The next step is to examine the read as a whole. Other records with the same QNAME may describe a distant breakpoint, an alternative mapping, or another segment of a chimeric alignment. This is especially important for long reads that span complex rearrangements or sequences that are poorly represented in the reference genome.
 
 QNAME lookup connects analysis of a genomic region with read-centered analysis. After a coordinate-based analysis identifies a read of interest, its QNAME can retrieve every BAM record for that read. These records support detailed read inspection, realignment to candidate sequences, local assembly, and construction of read--locus graphs. The same access is useful when reads are grouped by haplotype or base-modification pattern.
 
@@ -50,7 +50,7 @@ Each 64-bit QNAME hash `h` is divided into a radix prefix formed by the high `P`
 
 The offset array stores one 64-bit BGZF virtual offset for each BAM record. The offsets are ordered by hash and then by virtual offset within each hash group. One hash may correspond to several offsets.
 
-The group-start bit vector marks the start of each hash group in the offset array. One bit corresponds to each offset: the first offset in a group is marked with 1 and the others with 0. One additional sentinel bit marks the end of the final group. The rank directory accelerates `select1` on this bit vector. It stores the cumulative number of set bits before each 512-bit block; `select1` first locates the relevant block and then examines at most eight 64-bit words within it.
+The group-start bit vector marks the start of each hash group in the offset array. One bit corresponds to each offset: the first offset in a group is marked with 1 and the others with 0. One additional sentinel bit marks the end of the final group. The rank directory accelerates the `select1` operation (finding the position of the n-th set bit) on this bit vector. It stores the cumulative number of set bits before each 512-bit block; `select1` first locates the relevant block and then examines at most eight 64-bit words within it.
 
 ![QBI separates hash lookup from offset retrieval. The sections are shown in logical lookup order.](figures/qbi-index-structure.png){width=100%}
 
@@ -74,7 +74,7 @@ QNAMEs can be supplied as arguments, from a file, or through standard input, and
 
 Measurements used chromosome 21 subsets extracted with `samtools view -bh` from three public HG002 alignment BAM files: GIAB Illumina HiSeq 2x250 Novoalign, GIAB PacBio HiFi Revio 48x (BioProject PRJNA1028149), and Oxford Nanopore R10.4.1 SUP from ONT Open Data. The Illumina source header declared `SO:unsorted`; its chromosome subset was therefore sorted again with SAMtools before measurement. The resulting BAM sizes and record counts were 1.52 GiB and 11,145,955 records for Illumina, 962.3 MiB and 133,605 records for PacBio HiFi, and 4.90 GiB and 545,839 records for Oxford Nanopore.
 
-Benchmarks ran on Ubuntu Linux 26.04 with an AMD Ryzen 7 5700X (8 cores, 16 threads), 60 GiB RAM, and a Samsung 870 QVO SATA SSD using qbix 0.0.9, SAMtools/HTSlib 1.24, and Atlantool release `release-983975f`. QBI was built with `P = 16`, one BGZF thread, one sorting thread, a 512 MiB sorting-memory setting, and eight bucket bits. Index values are medians of three builds; lookup values are medians of five independently sampled query sets generated with seed 20260730. The BAM was read once before timing, and the filesystem cache was not explicitly cleared. Timings below the 0.01 s timer resolution are reported as `<0.01 s`. Commands, manifests, query checksums, and per-replicate results are recorded by the benchmark workflow in `paper/work`.
+Benchmarks ran on Ubuntu Linux 26.04 with an AMD Ryzen 7 5700X (8 cores, 16 threads), 60 GiB RAM, and a Samsung 870 QVO SATA SSD using qbix 0.0.9, SAMtools/HTSlib 1.24, and Atlantool release `release-983975f`. The QBI index was built with `P = 16`, one BGZF thread, one sorting thread, a 512 MiB sorting-memory setting, and eight bucket bits. Index values are medians of three builds; lookup values are medians of five independently sampled query sets generated with seed 20260730. The BAM was read once before timing, and the filesystem cache was not explicitly cleared. Timings below the 0.01 s timer resolution are reported as `<0.01 s`. Commands, manifests, query checksums, and per-replicate results are recorded by the benchmark workflow in `paper/work`.
 
 ## Index construction
 
@@ -93,7 +93,7 @@ On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in th
 
 ## End-to-end lookup
 
-The scaling curves show the different cost profiles of indexed lookup and a full BAM scan. qbix was fastest or tied for fastest throughout the measured range. Its time increased with the number of present QNAMEs, whereas `samtools view -N` remained nearly constant because it scanned the complete input for every query set. Atlantool also avoided a full scan, but increased more rapidly than qbix on these datasets.
+The scaling curves show the different cost profiles of indexed lookup and a full BAM scan. qbix was fastest or tied for fastest throughout the measured range. Its time increased with the number of present QNAMEs, whereas `samtools view -N` remained nearly constant because it scanned the complete input for every query set. Atlantool also avoided a full scan, but its time increased more rapidly than qbix on these datasets.
 
 ![End-to-end lookup time for present QNAMEs. Points are medians of five query sets; lines connect measured query counts. Values recorded as 0.00 s are shown at 0.005 s solely for logarithmic plotting.](figures/query-scaling.png){width=100%}
 

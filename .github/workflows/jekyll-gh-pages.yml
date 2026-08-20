@@ -51,6 +51,22 @@ jobs:
           os: debian
       - name: Rename PDF
         run: mv paper/paper.preprint.pdf paper/paper.pdf
+      - name: Generate Japanese preprint LaTeX
+        uses: xuanxu/publishing-artifacts-action@main
+        with:
+          journal: joss
+          paper-path: paper/paper-ja.md
+          args: "-o preprint"
+      - name: Build Japanese preprint PDF
+        uses: xu-cheng/latex-action@v4
+        with:
+          root_file: paper.preprint.tex
+          working_directory: paper
+          os: debian
+          latexmk_use_lualatex: true
+          extra_system_packages: fonts-noto-cjk
+      - name: Rename Japanese PDF
+        run: mv paper/paper.preprint.pdf paper/paper-ja.pdf
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Build with Jekyll

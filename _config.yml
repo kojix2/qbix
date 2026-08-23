@@ -22,7 +22,6 @@ exclude:
   - include/
   - paper/data/
   - paper/figures/
-  - paper/notes/
   - paper/scripts/
   - paper/work/
   - paper/paper.bib

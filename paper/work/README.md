@@ -3,7 +3,7 @@
 This directory contains two reproducible benchmark profiles for the qbix paper.
 
 - `quick` preserves the original chromosome-subset experiment: three query
-  replicates, 1/100/10,000 present QNAMEs, and QBI1 by default.
+  replicates, 1/100/10,000 present QNAMEs, using QBI1.
 - `full` is the paper-table profile: three index replicates and five query
   replicates for the Markdown benchmark tables. It measures qbix and Atlantool
   index construction, plus qbix query-order, qbix BAM-order, Atlantool, and

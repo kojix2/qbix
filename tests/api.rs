@@ -20,6 +20,7 @@ fn public_api_builds_opens_and_queries_an_index() {
 
     let index_path = qbix::build_index(&bam, qbix::BuildOptions::default()).unwrap();
     assert_eq!(index_path, PathBuf::from(format!("{bam_str}.qbi")));
+    assert_eq!(&std::fs::read(&index_path).unwrap()[..4], b"QBI2");
 
     qbix::check_index(&bam, qbix::CheckOptions::default()).unwrap();
     let mut check_options = qbix::CheckOptions::default();

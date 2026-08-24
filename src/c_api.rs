@@ -55,7 +55,7 @@ pub extern "C" fn qbix_build_index(
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
-                index_format: IndexFormat::Qbi1,
+                index_format: IndexFormat::Qbi2,
                 qbi2_radix_bits: None,
             },
         )

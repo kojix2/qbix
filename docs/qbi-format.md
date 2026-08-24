@@ -6,11 +6,11 @@ it is independent of the `qbix` software version.
 
 | File-format version | Magic | Status | Writer selection | Specification |
 | --- | --- | --- | --- | --- |
-| v1 | `QBI1` | Stable and default | `--index-format qbi1` | [QBI v1 specification](qbi1-format.md) |
-| v2 | `QBI2` | Experimental | `--index-format qbi2` | [QBI v2 specification](qbi2-format.md) |
+| v1 | `QBI1` | Stable | `--index-format qbi1` | [QBI v1 specification](qbi1-format.md) |
+| v2 | `QBI2` | Stable and default | `--index-format qbi2` | [QBI v2 specification](qbi2-format.md) |
 
 Current readers detect v1 or v2 from the magic and accept both. Writers use
-v1 unless v2 is requested explicitly. A future `qbix` release may add another
+v2 unless v1 is requested explicitly. A future `qbix` release may add another
 file-format version without changing the meaning of existing versions.
 
 All current QBI versions share these properties:

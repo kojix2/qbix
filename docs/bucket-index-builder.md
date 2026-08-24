@@ -2,7 +2,7 @@
 
 This document describes the bucketed build path used by `qbix index`.
 It is an implementation detail of index construction shared by QBI file-format
-v1 (`QBI1`) and experimental v2 (`QBI2`).
+v1 (`QBI1`) and v2 (`QBI2`).
 
 ## Goal
 
@@ -18,9 +18,9 @@ peak record memory to approximately one bucket at a time during final sorting.
 
 The builder writes one of two on-disk versions:
 
-- v1 (`QBI1`): the stable default with a 48-byte header and 16-byte records,
+- v1 (`QBI1`): the original layout with a 48-byte header and 16-byte records,
   documented in [qbi1-format.md](qbi1-format.md)
-- v2 (`QBI2`): the experimental grouped radix layout documented in
+- v2 (`QBI2`): the default grouped radix layout documented in
   [qbi2-format.md](qbi2-format.md)
 
 Both preserve the logical ordering by `(qhash, file_offset)`.
@@ -245,7 +245,7 @@ pub struct BuildOptions {
 - `bucket_bits`: 8
 - `sort_threads`: 1
 - `temp_dir`: output index directory
-- `index_format`: QBI1
+- `index_format`: QBI2
 - `qbi2_radix_bits`: automatic (P=8 for at most 522,240 records, otherwise P=16)
 
 `BuildOptions`, `LookupOptions`, and `CheckOptions` are `#[non_exhaustive]`.

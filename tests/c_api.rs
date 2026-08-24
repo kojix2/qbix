@@ -18,6 +18,10 @@ fn c_api_builds_opens_looks_up_and_closes() {
         0
     );
     assert_eq!(
+        &std::fs::read(format!("{bam_str}.qbi")).unwrap()[..4],
+        b"QBI2"
+    );
+    assert_eq!(
         qbix::c_api::qbix_check_index(bam.as_ptr(), ptr::null(), 1, qbix::c_api::QBIX_CHECK_QUICK,),
         0,
         "{}",

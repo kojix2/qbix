@@ -97,8 +97,8 @@ fn indexes_gets_shows_and_checks_a_synthetic_bam() {
         String::from_utf8_lossy(&json_stats.stderr)
     );
     let json_stdout = String::from_utf8(json_stats.stdout).unwrap();
-    assert!(json_stdout.contains("\"format\": \"QBI1\""));
-    assert!(json_stdout.contains("\"qbi2_radix_bits\": null"));
+    assert!(json_stdout.contains("\"format\": \"QBI2\""));
+    assert!(json_stdout.contains("\"qbi2_radix_bits\": 8"));
     assert!(json_stdout.contains("\"records\": 4"));
     assert!(json_stdout.contains("\"distinct_qname_hashes\": 3"));
     assert!(json_stdout.contains("\"singletons\": 2"));

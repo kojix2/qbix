@@ -19,7 +19,7 @@ The index stores:
 
 The `.qbi` file-format versions are documented in
 [docs/qbi-format.md](docs/qbi-format.md): v1 uses magic `QBI1`, while the
-experimental v2 uses magic `QBI2`.
+default v2 uses magic `QBI2`.
 
 Draft paper (PDF): [qbix: Read-name lookup for coordinate-sorted BAM files](https://kojix2.github.io/qbix/paper/paper.pdf)
 
@@ -106,16 +106,15 @@ Create an index:
 qbix index reads.bam
 ```
 
-QBI file-format v1 (`QBI1`) remains the default. The experimental grouped radix
-format v2 (`QBI2`) can be built explicitly; `get`, `show`, `check`, and `stats`
-detect either version:
+QBI file-format v2 (`QBI2`) is the default. The original v1 format (`QBI1`)
+remains available explicitly; `get`, `show`, `check`, and `stats` detect either
+version:
 
 ```sh
-qbix index --index-format qbi2 reads.bam
+qbix index --index-format qbi1 reads.bam
 ```
 
-QBI v2 is intended for evaluation and is not yet the default or a frozen format.
-Use `--qbi2-radix-bits 8`, `12`, or `16` to compare its experimental layouts.
+Use `--qbi2-radix-bits 8`, `12`, or `16` to select a QBI2 layout explicitly.
 P=12 is the speed/space intermediate choice. When omitted, the conservative
 automatic policy selects P=8 for at most 522,240 records and P=16 otherwise.
 An explicit value always takes precedence.

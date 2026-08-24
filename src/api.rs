@@ -138,7 +138,7 @@ where
             bucket_bits: options.bucket_bits.unwrap_or(DEFAULT_BUCKET_BITS),
             sort_threads: options.sort_threads.unwrap_or(DEFAULT_SORT_THREADS),
             temp_dir: temp_dir.as_deref(),
-            index_format: options.index_format.unwrap_or(IndexFormat::Qbi1),
+            index_format: options.index_format.unwrap_or_default(),
             qbi2_radix_bits: options.qbi2_radix_bits,
         },
     )

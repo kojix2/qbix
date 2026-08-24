@@ -1,9 +1,9 @@
-# QBI File Format Version 2 (QBI2, Experimental)
+# QBI File Format Version 2 (QBI2)
 
 QBI file-format version 2 is identified by the magic `QBI2`. It is an
-experimental grouped radix index that stores each distinct XXH3-64 QNAME hash
-once and keeps BAM virtual offsets in a separate array. QBI file-format version
-1 (`QBI1`) remains the stable default; readers identify either version from its
+grouped radix index that stores each distinct XXH3-64 QNAME hash once and keeps
+BAM virtual offsets in a separate array. QBI file-format version 2 is the
+default; readers identify it or version 1 (`QBI1`) from the
 magic bytes. See [QBI File Formats](qbi-format.md) for the version overview.
 Early index-only measurements are recorded in
 [qbi2-benchmark.md](qbi2-benchmark.md).

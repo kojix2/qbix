@@ -557,8 +557,8 @@ fn index_format_arg() -> Arg {
     Arg::new(ARG_INDEX_FORMAT)
         .long("index-format")
         .value_name("qbi1|qbi2")
-        .default_value("qbi1")
-        .help("Index format (QBI2 is experimental)")
+        .default_value("qbi2")
+        .help("Index format")
 }
 
 fn qbi2_radix_bits_arg() -> Arg {
@@ -832,7 +832,7 @@ mod tests {
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
-                index_format: IndexFormat::Qbi1,
+                index_format: IndexFormat::Qbi2,
                 qbi2_radix_bits: None,
             }
         );
@@ -866,14 +866,14 @@ mod tests {
                 bucket_bits: 10,
                 sort_threads: 3,
                 temp_dir: Some("tmp".to_string()),
-                index_format: IndexFormat::Qbi1,
+                index_format: IndexFormat::Qbi2,
                 qbi2_radix_bits: None,
             }
         );
     }
 
     #[test]
-    fn parses_experimental_qbi2_format() {
+    fn parses_explicit_qbi2_format() {
         let action = parse_args(strings([
             "qbix",
             "index",
@@ -1084,7 +1084,7 @@ mod tests {
                 bucket_bits: DEFAULT_BUCKET_BITS,
                 sort_threads: DEFAULT_SORT_THREADS,
                 temp_dir: None,
-                index_format: IndexFormat::Qbi1,
+                index_format: IndexFormat::Qbi2,
                 qbi2_radix_bits: None,
             }
         );

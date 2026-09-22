@@ -42,33 +42,29 @@ In contrast, `qbix` stores a fixed-width hash instead of the QNAME string, so th
 
 # Software design
 
-## QBI index structure
+`qbix` primarily targets QNAME lookup in coordinate-sorted long-read BAM files. Its design has three goals: fast lookup, a small index, and fast construction. The QBI index is a one-to-many index from fixed-width hashes to BAM record locations. It is built by an external bucket sort over fixed-width records.
 
-A QBI file contains a 128-byte header and five data sections: a radix directory, a hash-suffix array, a group-start bit vector, a rank directory, and an offset array. The header records the position and size of each section, the BAM record count, the number of unique hashes, the radix parameters, and information about the source BAM file.
+## Hash-based lookup
 
-Each 64-bit QNAME hash `h` is divided into a radix prefix formed by the high `P` bits and a hash suffix formed by the remaining bits. The radix directory records the start and end positions in the hash-suffix array for each prefix. The hash-suffix array stores the suffix of each unique hash once, in the order of the original 64-bit hashes. QBI currently supports `P = 8`, `P = 12`, and `P = 16`.
+A QNAME can occur in more than one BAM record, for example when a read has secondary or supplementary alignments. The index therefore maps the XXH3-64 hash of each QNAME to one or more BGZF virtual offsets. A BGZF virtual offset combines the location of a compressed block with an uncompressed position within that block.
 
-The offset array stores one 64-bit BGZF virtual offset for each BAM record. The offsets are ordered by hash and then by virtual offset within each hash group. One hash may correspond to several offsets.
+The search keys are hashes rather than QNAME strings. Their size does not depend on QNAME length. The hash array contains each distinct hash once, in ascending order. The corresponding offsets are stored as contiguous groups in a separate array.
 
-The group-start bit vector marks the start of each hash group in the offset array. One bit corresponds to each offset: the first offset in a group is marked with 1 and the others with 0. One additional sentinel bit marks the end of the final group. The rank directory accelerates the `select1` operation (finding the position of the n-th set bit) on this bit vector. It stores the cumulative number of set bits before each 512-bit block; `select1` first locates the relevant block and then examines at most eight 64-bit words within it.
+Each hash is divided into a radix prefix formed by its high `P` bits and a suffix formed by the remaining bits. The radix directory records the suffix-array range for each prefix. Binary search is limited to this range. This requires fewer comparisons than searching the complete array.
+
+Offsets associated with the same hash occupy a contiguous range in the offset array. A hash's position in the hash array also identifies its offset group. A separate bit vector marks the start of each group. The rank directory records the cumulative number of group boundaries before each 512-bit block. These counts identify the block containing a requested boundary. Two consecutive group boundaries delimit the offset range for one hash.
 
 ![QBI separates hash lookup from offset retrieval. The sections are shown in logical lookup order.](figures/qbi-index-structure.png){width=100%}
 
-During lookup, the QNAME hash is divided into its prefix and suffix. The radix directory identifies the relevant range of the hash-suffix array, and binary search is limited to that range. When a hash is found, the group-start bit vector and rank directory give the start and end positions of its offset group.
+`qbix` reads the BAM records at the resulting virtual offsets through htslib [@bonfield2021htslib]. It returns only records whose actual QNAME matches the query. The BAM record at each retrieved offset must be read before any result can be emitted. Exact verification adds only a QNAME comparison to this read. A hash collision causes extra BAM records to be read. It cannot add a record with the wrong QNAME to the result.
 
-`qbix` reads the candidate BAM records through htslib [@bonfield2021htslib] and compares their actual QNAMEs. This ensures that only the correct records are returned, even when hash collisions occur.
+Published datasets and a typical 30-fold WGS configuration put the number of distinct QNAMEs in a human WGS BAM at approximately 2--10 million for long reads and 300--400 million for Illumina reads [@shumate2020ashkenazi; @illuminaDnaPrep]. Assuming independent, uniformly distributed 64-bit hashes, the probability that at least one pair of distinct QNAMEs shares a hash is on the order of 10⁻⁷--10⁻⁶ in the former range and approximately 0.3--0.4% in the latter.
 
-## Memory-efficient construction
+The QBI header records the size, modification time, and header hash of the source BAM. Before lookup, `qbix` compares these values with metadata from the supplied BAM.
 
-`qbix` scans the BAM file once and distributes fixed-width `(hash, offset)` records into temporary files according to the high bits of the hash. Each temporary file is sorted independently and then processed in prefix order to build the QBI index. Peak memory use therefore depends mainly on the largest bucket sorted at one time, rather than on the total number of BAM records.
+## Index construction
 
-The sorted records are processed once. Each offset is written, while suffixes and group boundaries are recorded only when the hash changes. The rank and radix directories are built in the same pass, without retaining all hashes and offsets in memory.
-
-## Lookup and interfaces
-
-`qbix` provides query-order and BAM-order output modes. Query-order mode reads QNAMEs incrementally and reports results in the same order. BAM-order mode sorts the candidate offsets to reduce random seeks when many QNAMEs are requested.
-
-QNAMEs can be supplied as arguments, from a file, or through standard input, and results are written as SAM or BAM. `qbix` can remove repeated queries, record missing QNAMEs, and is also available through Rust and C APIs.
+During index construction, `qbix` scans the BAM once and distributes fixed-width `(hash, offset)` records into temporary buckets selected by the high bits of the hash. Each bucket can be sorted independently. Several buckets can therefore be sorted in parallel. Processing the sorted buckets in numeric order yields the global `(hash, offset)` order, allowing the records to be streamed directly into the QBI file. This design avoids retaining all records in memory at the cost of temporary disk space and additional I/O.
 
 # Evaluation
 
@@ -89,9 +85,11 @@ Table 1 reports index construction measurements for the chromosome 21 subsets. P
 | ONT | qbix | 17.98 | 21.3 | 8.0 | 6.8 |
 |  | Atlantool | 33.88 | 542.2 | 10.4 | 11.2 |
 
-On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in the same environment gave median build times of 4.11 s for QBI1 and 4.13 s for QBI2 with `P = 16`. The corresponding index sizes were 2.0 MiB and 2.3 MiB. At this subset size, the fixed radix directory makes QBI2 slightly larger than QBI1.
+On the PacBio HiFi chromosome 21 subset, a separate three-build comparison in the same environment gave median build times of 4.11 s for the legacy QBI1 format and 4.13 s for the default QBI2 format (`P = 16`). The corresponding index sizes were 2.0 MiB and 2.3 MiB. At this subset size, the fixed radix directory makes QBI2 slightly larger than QBI1.
 
 ## End-to-end lookup
+
+`qbix` can emit results in query order or BAM order. Query order preserves the input order, whereas BAM order sorts candidate offsets to reduce random seeks.
 
 The scaling curves show the different cost profiles of indexed lookup and a full BAM scan. qbix was fastest or tied for fastest throughout the measured range. Its time increased with the number of present QNAMEs, whereas `samtools view -N` remained nearly constant because it scanned the complete input for every query set. Atlantool also avoided a full scan, but its time increased more rapidly than qbix on these datasets.
 

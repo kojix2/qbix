@@ -20,25 +20,25 @@ header-includes:
 
 # Summary
 
-BAM files are commonly sorted by genomic coordinate, which allows efficient access to records from a selected region [@li2009sam]. However, records belonging to one read may occur at different coordinates because of secondary or supplementary alignments. Examining a read as a whole therefore requires collecting its records by QNAME rather than by genomic position.
+BAM files are commonly sorted by genomic coordinate, which allows efficient access to records from a selected region [@li2009sam]. However, records belonging to one read may occur at different coordinates because of secondary or supplementary alignments. Determining where all parts of a read align therefore requires collecting its records by QNAME rather than by genomic coordinate.
 
 `qbix` adds QNAME lookup to an existing coordinate-sorted BAM file through a side index. It uses a fixed-width hash to locate candidate BAM records and then verifies their exact QNAMEs. The index can be built with a memory-efficient external sort. This allows alignments of a read identified in one genomic region to be collected from distant coordinates and used for detailed inspection, realignment, local assembly, and other read-centered analyses.
 
 # Statement of need
 
-Coordinate-based analysis often identifies a read at a genomic region of interest. The next step is to examine the read as a whole. Other records with the same QNAME may describe a distant breakpoint, an alternative mapping, or another segment of a chimeric alignment. This is especially important for long reads that span complex rearrangements or sequences that are poorly represented in the reference genome.
+Analyses of complex structural variation often require examining individual reads to determine precisely where each part maps to the reference genome. This is especially important for long reads. For example, collecting all alignment records with the same QNAME reveals the genomic location of each segment of a chimeric read.
 
-QNAME lookup connects analysis of a genomic region with read-centered analysis. After a coordinate-based analysis identifies a read of interest, its QNAME can retrieve every BAM record for that read. These records support detailed read inspection, realignment to candidate sequences, local assembly, and construction of read--locus graphs. The same access is useful when reads are grouped by haplotype or base-modification pattern.
+QNAME lookup connects analysis of a genomic region with read-centered analysis. After a coordinate-based analysis identifies a read of interest, its QNAME can retrieve every BAM record for that read. These records support realignment to candidate sequences, local assembly, and analysis of relationships among genomic regions supported by the same read. The same retrieval method is useful for collecting alignments of reads that have been grouped by haplotype or base-modification pattern.
 
-`samtools view -N` can extract records that match a list of QNAMEs [@danecek2021twelve]. However, it must scan the entire BAM file even when only a few reads are requested. This makes it slow for large BAM files. `qbix` is designed to retrieve all records belonging to specified QNAMEs from an existing coordinate-sorted BAM file.
+`samtools view -N` can extract records that match a list of QNAMEs [@danecek2021twelve]. However, it must scan the entire BAM file even when only a few reads are requested. This makes it slow for large BAM files. SA tags can provide the locations of supplementary alignments, but their availability depends on the aligner and its settings. They do not provide a general mechanism for enumerating every record with the same QNAME. `qbix` is designed to locate candidate records in an existing coordinate-sorted BAM file and return them after checking their actual QNAMEs.
 
 # State of the field
 
-BAI and CSI, the index formats commonly used with BAM files, index genomic coordinates but not QNAMEs. A queryname-sorted BAM can support QNAME lookup through a sparse index that uses the BAM file itself [@kojix2026bni]. However, many tools that process BAM files expect coordinate-sorted input, so a separate coordinate-sorted BAM usually remains necessary.
+BAI and CSI, the index formats used with coordinate-sorted BAM files, do not support QNAME lookup. A queryname-sorted BAM can support QNAME lookup through a sparse index that uses the BAM file itself [@kojix2026bni]. However, many tools also require a coordinate-sorted BAM, so retaining both orders means storing the BAM data twice.
 
-For coordinate-sorted BAM files, `bri` introduced an index that stores complete QNAME strings together with BGZF virtual offsets [@simpson2019bri]. Atlantool stores complete QNAMEs and offsets in a BGZF-compressed data file and places a sparse upper-level index above it [@rath2025atlantool].
+For coordinate-sorted BAM files, `bri` introduced an index that stores complete QNAME strings together with BGZF virtual offsets [@simpson2019bri]. Atlantool stores complete QNAMEs and offsets in a BGZF-compressed data file and places a sparse upper-level index above it [@rath2025atlantool]. Both retain complete QNAME strings as search keys.
 
-`qbix` also adds a side index to a coordinate-sorted BAM, but it does not store complete QNAME strings. Each QNAME is represented by a fixed-width hash, and candidate records are checked against their actual QNAMEs in the BAM file. Each hash is stored once, while its associated offsets are kept in a separate array. The index size therefore does not depend on QNAME length, and the search key is not repeated for multiple records belonging to the same QNAME.
+In contrast, `qbix` stores a fixed-width hash instead of the QNAME string, so the index size does not depend on QNAME length. During lookup, it reads BAM records at the BGZF virtual offsets associated with the hash and returns only records whose QNAME matches the query.
 
 # Software design
 

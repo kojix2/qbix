@@ -36,6 +36,7 @@ def main() -> None:
         }
     )
     datasets = ["Illumina", "PacBio HiFi", "Oxford Nanopore"]
+    query_sizes = sorted({int(row["qnames"]) for row in rows})
     figure, axes = plt.subplots(1, 3, figsize=(7.2, 2.65), sharey=True)
 
     for panel, (axis, dataset) in enumerate(zip(axes, datasets), start=1):
@@ -62,7 +63,7 @@ def main() -> None:
         axis.set_yscale("log")
         axis.set_title(f"{chr(64 + panel)}. {dataset}")
         axis.set_xlabel("Queried QNAMEs")
-        axis.set_xticks([1, 10, 100, 1_000, 10_000])
+        axis.set_xticks(query_sizes)
         axis.grid(axis="y", which="major", color="0.88", linewidth=0.7)
 
     axes[0].set_ylabel("Median wall time (s)")

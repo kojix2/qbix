@@ -1,18 +1,20 @@
 # Paper benchmarks
 
-This directory contains two reproducible benchmark profiles for the qbix paper.
+This directory contains three reproducible benchmark profiles for the qbix
+paper.
 
 - `quick` preserves the original chromosome-subset experiment: three query
   replicates, 1/100/10,000 present QNAMEs, using QBI1.
-- `full` is the paper-table profile: three index replicates and five query
-  replicates for the Markdown benchmark tables. It measures qbix and Atlantool
-  index construction, plus qbix query-order, qbix BAM-order, Atlantool, and
-  `samtools view -N` full-scan lookups for 1/10/100/1,000/10,000 present and
-  absent QNAMEs.
+- `paper` is the whole-genome manuscript profile. It measures QBI2 with
+  `P = 16`, uses three index replicates and five disjoint query sets, and
+  tests 1/100/10,000 present QNAMEs plus 10,000 absent QNAMEs. This is the
+  recommended profile for replacing the current chromosome 21 results.
+- `full` retains the exploratory matrix of QBI1 and QBI2 (`P = 8/12/16`) for
+  1/10/100/1,000/10,000 present and absent QNAMEs. It is intentionally much
+  slower and is not needed for the manuscript tables.
 
-The BAM path does not imply a chromosome. The earlier published measurements
-used HG002 chr21 subsets; the full profile accepts chromosome subsets or
-whole-genome BAMs and records the choice in its manifest.
+The BAM path does not imply a chromosome. Each run records the region and
+provenance in its manifest and run-wide dataset table.
 
 ## Requirements
 
@@ -20,6 +22,7 @@ whole-genome BAMs and records the choice in its manifest.
 - GNU time 1.9 (installed by pixi)
 - Python 3
 - SAMtools
+- Atlantool (installed by `./setup_tools.sh`)
 - a coordinate-sorted BAM on local storage
 
 `hyperfine` is not required. `/usr/bin/time` is used because the benchmark
@@ -35,6 +38,7 @@ downloaded PacBio file):
 
 ```sh
 cd paper/work
+./setup_tools.sh
 ./download_real_data.sh
 ```
 
@@ -50,6 +54,10 @@ from Oxford Nanopore Open Data, and HG002 Illumina HiSeq 2x250 Novoalign from
 GIAB. Files are stored under `data/`; large BAM, BAI, and aria2 control files
 are excluded from Git.
 
+Use local SSD or NVMe storage. Allow at least 750 GiB for the three source BAMs,
+indexes, temporary construction files, and results. The benchmark records the
+mount and storage description used for both input and output.
+
 ## Run
 
 Builds and generated results are written below `output/`.
@@ -59,19 +67,26 @@ cd paper/work
 pixi run benchmark /path/to/benchmark.bam
 ```
 
-For the full profile, supply dataset provenance through environment variables:
+For one manuscript dataset, supply provenance through environment variables:
 
 ```sh
 QBIX_DATASET_PLATFORM='ONT R10.4.1 SUP' \
 QBIX_DATASET_SOURCE='public accession or URL' \
 QBIX_DATASET_REGION='whole-genome' \
 QBIX_STORAGE='local NVMe, ext4' \
-  pixi run benchmark-full /path/to/benchmark.bam ont-wgs run-01
+  pixi run benchmark-paper /path/to/benchmark.bam ont-wgs run-01
 ```
 
-Run the full profile on at least one Illumina paired-end, one PacBio HiFi, and
-one ONT dataset. At least one dataset should be whole-genome; chromosome-only
-results must be labeled as such.
+After downloading the three configured HG002 inputs, the complete manuscript
+benchmark is one command:
+
+```sh
+QBIX_STORAGE='local NVMe, ext4' pixi run benchmark-paper-all run-01
+```
+
+The datasets run serially under one run ID, starting with the smallest. The
+`paper` profile is sized to make a same-day run practical on the target
+8-core/64-GiB machine; actual duration depends mainly on storage throughput.
 
 The runner creates a UTC timestamp run ID. An explicit dataset ID and run ID
 can be supplied when needed:
@@ -82,7 +97,7 @@ pixi run benchmark /path/to/benchmark.bam dataset-L trial-01
 
 Preflight stops the run when qbix indexing exceeds 60 seconds or a SAMtools
 scan exceeds 15 seconds. Override these limits explicitly for a deliberate
-larger run:
+larger run. The paper runner uses 7,200 and 1,800 seconds, respectively.
 
 ```sh
 QBIX_MAX_INDEX_S=180 QBIX_MAX_SCAN_S=60 \
@@ -100,7 +115,8 @@ pixi run queries   BAM --run-id trial-01 --dataset-id dataset-L
 pixi run summary   BAM --run-id trial-01 --dataset-id dataset-L
 ```
 
-Add `--profile full` to every separately invoked stage for a full run. The
+Add `--profile paper` to every separately invoked stage for a
+manuscript run. Use `--profile full` only for the exploratory matrix. The
 optional one-factor-at-a-time construction experiment is run separately:
 
 ```sh
@@ -119,13 +135,28 @@ Tool paths can be overridden with the `QBIX`, `SAMTOOLS`, `PYTHON`, and
 The BAM is read once before query timing. The operating-system page cache is
 not explicitly cleared between runs.
 
+Present QNAMEs are selected deterministically across the complete BAM. SAMtools
+first performs QNAME-based subsampling with seed 20260730, targeting about 20
+times the required number of records. The workflow then retains the lowest
+keyed BLAKE2b ranks among distinct QNAMEs and divides them into disjoint query
+sets. If the first sample contains too few distinct names, the sampling
+fraction is doubled and retried. This avoids formatting the entire WGS BAM as
+SAM in Python while preserving whole-file sampling.
+
 The default comparison tools are `qbix`, `samtools`, and `atlantool`, matching
 the paper tables. `bri` remains available as an explicit extra comparison:
 
 ```sh
 QBIX_BENCHMARK_TOOLS='qbix samtools atlantool bri' \
-  pixi run benchmark-full /path/to/benchmark.bam dataset-L trial-01
+  pixi run benchmark-paper /path/to/benchmark.bam dataset-L trial-01
 ```
+
+## Use a completed run in the manuscript
+
+Every summary refreshes `output/RUN_ID/paper_tables.md` from all completed
+datasets in that run. After reviewing the raw TSV files and this table, update
+the English and Japanese evaluation sections and regenerate the figure from the
+reviewed values. This interpretive step is intentionally not automatic.
 
 Results are isolated by run and dataset:
 
@@ -152,7 +183,9 @@ output/
 ## Layout
 
 - `run_quick_benchmark.sh`: runs all stages
-- `run_full_benchmark.sh`: runs the full QBI layout/query matrix
+- `run_paper_benchmark.sh`: runs the same-day manuscript profile for one BAM
+- `run_paper_benchmarks.sh`: runs all three configured whole-genome BAMs
+- `run_full_benchmark.sh`: runs the exploratory QBI layout/query matrix
 - `download_real_data.sh`: downloads and verifies the real HG002 datasets
 - `benchmark.py`: prepares data, runs measurements, verifies output, and summarizes results
 - `pixi.toml` / `pixi.lock`: pinned Python and SAMtools environment

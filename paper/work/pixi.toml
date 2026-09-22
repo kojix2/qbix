@@ -13,6 +13,8 @@ MPLCONFIGDIR = ".matplotlib"
 
 [tasks]
 benchmark = "./run_quick_benchmark.sh"
+benchmark-paper = "./run_paper_benchmark.sh"
+benchmark-paper-all = "./run_paper_benchmarks.sh"
 benchmark-full = "./run_full_benchmark.sh"
 preflight = "python benchmark.py preflight"
 prepare = "python benchmark.py prepare"

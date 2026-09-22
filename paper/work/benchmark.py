@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible quick benchmarks for qbix."""
+"""Reproducible benchmarks for the qbix paper."""
 
 from __future__ import annotations
 
@@ -59,6 +59,32 @@ QBIX_LAYOUTS = {
 
 
 @dataclass(frozen=True)
+class BenchmarkProfile:
+    query_replicates: int
+    index_replicates: int
+    query_sizes: tuple[int, ...]
+    absent_query_sizes: tuple[int, ...]
+    default_layouts: tuple[str, ...]
+
+
+BENCHMARK_PROFILES = {
+    "quick": BenchmarkProfile(3, 3, (1, 100, 10_000), (), ("qbi1",)),
+    # The manuscript profile is deliberately smaller than the exploratory
+    # matrix so that all three whole-genome datasets can finish within a day.
+    "paper": BenchmarkProfile(
+        5, 3, (1, 100, 10_000), (10_000,), ("qbi2-p16",)
+    ),
+    "full": BenchmarkProfile(
+        5,
+        3,
+        (1, 10, 100, 1_000, 10_000),
+        (1, 10, 100, 1_000, 10_000),
+        tuple(QBIX_LAYOUTS),
+    ),
+}
+
+
+@dataclass(frozen=True)
 class Timing:
     elapsed_s: float
     user_s: float
@@ -80,16 +106,12 @@ class Benchmark:
         self.region = args.region
         self.storage = args.storage
         self.profile = args.profile
-        self.replicates = 3 if self.profile == "quick" else 5
-        self.index_replicates = 3
-        self.requested_query_sizes = (
-            (1, 100, 10_000)
-            if self.profile == "quick"
-            else (1, 10, 100, 1_000, 10_000)
-        )
-        layout_names = args.qbix_layouts or (
-            ["qbi1"] if self.profile == "quick" else list(QBIX_LAYOUTS)
-        )
+        self.profile_config = BENCHMARK_PROFILES[self.profile]
+        self.replicates = self.profile_config.query_replicates
+        self.index_replicates = self.profile_config.index_replicates
+        self.requested_query_sizes = self.profile_config.query_sizes
+        self.absent_query_sizes = self.profile_config.absent_query_sizes
+        layout_names = args.qbix_layouts or self.profile_config.default_layouts
         self.qbix_layouts = [QBIX_LAYOUTS[name] for name in layout_names]
         self.parameter_layout = QBIX_LAYOUTS[args.parameter_layout]
         self.tools = set(args.tools)
@@ -135,6 +157,17 @@ class Benchmark:
         if "atlantool" in self.tools and not self.have_atlantool:
             print(f"note: atlantool not found at {self.atlantool}; skipping atlantool "
                   f"comparison (run setup_tools.sh or set ATLANTOOL=)")
+        if self.profile == "paper":
+            missing_tools = []
+            if "atlantool" in self.tools and not self.have_atlantool:
+                missing_tools.append("atlantool")
+            if "bri" in self.tools and not self.have_bri:
+                missing_tools.append("bri")
+            if missing_tools:
+                raise SystemExit(
+                    "error: paper profile requires every requested comparison "
+                    f"tool; missing {', '.join(missing_tools)} (run setup_tools.sh)"
+                )
 
         self.ensure_qbix()
         self.ensure_manifest()
@@ -181,6 +214,10 @@ class Benchmark:
             "bam_mtime_ns": bam_stat.st_mtime_ns,
             "profile": self.profile,
             "qbix_layouts": [layout.name for layout in self.qbix_layouts],
+            "query_replicates": self.replicates,
+            "index_replicates": self.index_replicates,
+            "requested_query_sizes": list(self.requested_query_sizes),
+            "absent_query_sizes": list(self.absent_query_sizes),
             "platform": self.platform,
             "source": self.source,
             "region": self.region,
@@ -206,9 +243,6 @@ class Benchmark:
             **identity,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "seed": SEED,
-            "replicates": self.replicates,
-            "index_replicates": self.index_replicates,
-            "requested_query_sizes": self.requested_query_sizes,
             "qbix_path": str(self.qbix.resolve()),
             "qbix_sha256": sha256_file(self.qbix),
             "git_commit": command_output(
@@ -218,6 +252,11 @@ class Benchmark:
                 ["git", "-C", str(REPO_DIR), "status", "--short"]
             ).splitlines(),
             "cache_policy": "BAM read once; filesystem cache not explicitly cleared",
+            "query_sampling": {
+                "method": "samtools QNAME subsample followed by keyed BLAKE2b bottom-k",
+                "oversampling_factor": 20,
+                "seed": SEED,
+            },
             "index_options": {
                 "bgzf_threads": 1,
                 "sort_threads": 1,
@@ -337,11 +376,41 @@ class Benchmark:
         self.run([self.samtools, "quickcheck", "-v", self.bam], label="quickcheck")
         header = command_output([self.samtools, "view", "-H", self.bam])
         (self.out / "benchmark.header.sam").write_text(header)
-        if not any(
+        coordinate_header = any(
             line.startswith("@HD") and "SO:coordinate" in line.split("\t")
             for line in header.splitlines()
-        ):
-            raise SystemExit("error: BAM header does not declare SO:coordinate")
+        )
+        if coordinate_header:
+            sort_order = "coordinate (declared by BAM header)"
+        else:
+            # Some published coordinate-sorted BAMs, including the Illumina
+            # input used by the paper, have an incorrect SO:unsorted header.
+            # Building a temporary BAI lets htslib verify record order without
+            # rewriting the large BAM merely to edit its header.
+            order_check = self.tmp / "coordinate-order-check.bai"
+            order_check.unlink(missing_ok=True)
+            try:
+                self.run(
+                    [
+                        self.samtools,
+                        "index",
+                        "-@",
+                        "1",
+                        "-o",
+                        order_check,
+                        self.bam,
+                    ],
+                    label="verify-coordinate-order",
+                    stdout=subprocess.DEVNULL,
+                )
+            except subprocess.CalledProcessError as error:
+                raise SystemExit(
+                    "error: BAM header does not declare SO:coordinate and "
+                    "samtools could not index the records in coordinate order"
+                ) from error
+            finally:
+                order_check.unlink(missing_ok=True)
+            sort_order = "coordinate (verified by samtools index; header differs)"
 
         environment = [
             f"date={datetime.now(timezone.utc).isoformat()}",
@@ -374,7 +443,7 @@ class Benchmark:
             command_output([self.samtools, "view", "-@", "1", "-c", self.bam])
         )
         wanted = self.replicates * max(self.requested_query_sizes)
-        selected = self.select_qnames(wanted)
+        selected = self.select_qnames(wanted, count)
         if len(selected) >= wanted:
             max_queries = max(self.requested_query_sizes)
         elif len(selected) >= self.replicates * 1_000:
@@ -386,7 +455,7 @@ class Benchmark:
             )
         selected = selected[: self.replicates * max_queries]
         self.write_queries(selected, max_queries)
-        if self.profile == "full":
+        if self.absent_query_sizes:
             self.write_absent_queries(max_queries)
         (self.out / "max_queries.txt").write_text(f"{max_queries}\n")
         upsert_tsv(
@@ -410,7 +479,7 @@ class Benchmark:
                     self.bam,
                     self.bam.stat().st_size,
                     count,
-                    "coordinate",
+                    sort_order,
                     self.platform,
                     self.region,
                     self.storage,
@@ -424,41 +493,51 @@ class Benchmark:
             f"{len(selected)} sampled QNAMEs, maximum query set {max_queries}"
         )
 
-    def select_qnames(self, wanted: int) -> list[str]:
-        command = [self.samtools, "view", "-@", "1", self.bam]
-        self.log_command(command, "select-qnames")
-        process = subprocess.Popen(
-            [str(value) for value in command],
-            stdout=subprocess.PIPE,
-        )
-        assert process.stdout is not None
-        heap: list[tuple[int, str]] = []
-        selected: set[str] = set()
-        key = SEED.to_bytes(16, "little")
-        for raw_line in process.stdout:
-            raw_name = raw_line.split(b"\t", 1)[0]
-            try:
-                name = raw_name.decode()
-            except UnicodeDecodeError as error:
-                process.kill()
-                raise SystemExit(f"error: non-UTF-8 QNAME: {error}") from error
-            if name in selected:
-                continue
-            rank = int.from_bytes(
-                hashlib.blake2b(raw_name, digest_size=16, key=key).digest(),
-                "big",
+    def select_qnames(self, wanted: int, total_records: int) -> list[str]:
+        # Let htslib discard most templates before formatting SAM. This still
+        # scans the complete BAM and samples by QNAME, but avoids sending
+        # hundreds of millions of lines through Python for whole-genome data.
+        fraction = min(1.0, (wanted * 20) / max(total_records, 1))
+        while True:
+            command: list[str | Path] = [self.samtools, "view", "-@", "1"]
+            if fraction < 1.0:
+                command.extend(["-s", samtools_subsample_argument(SEED, fraction)])
+            command.append(self.bam)
+            self.log_command(command, f"select-qnames-{fraction:.12g}")
+            process = subprocess.Popen(
+                [str(value) for value in command],
+                stdout=subprocess.PIPE,
             )
-            item = (-rank, name)
-            if len(heap) < wanted:
-                heapq.heappush(heap, item)
-                selected.add(name)
-            elif item > heap[0]:
-                _, removed = heapq.heapreplace(heap, item)
-                selected.remove(removed)
-                selected.add(name)
-        if process.wait() != 0:
-            raise SystemExit("error: samtools failed while selecting QNAMEs")
-        return [name for _, name in sorted(heap, reverse=True)]
+            assert process.stdout is not None
+            heap: list[tuple[int, str]] = []
+            selected: set[str] = set()
+            key = SEED.to_bytes(16, "little")
+            for raw_line in process.stdout:
+                raw_name = raw_line.split(b"\t", 1)[0]
+                try:
+                    name = raw_name.decode()
+                except UnicodeDecodeError as error:
+                    process.kill()
+                    raise SystemExit(f"error: non-UTF-8 QNAME: {error}") from error
+                if name in selected:
+                    continue
+                rank = int.from_bytes(
+                    hashlib.blake2b(raw_name, digest_size=16, key=key).digest(),
+                    "big",
+                )
+                item = (-rank, name)
+                if len(heap) < wanted:
+                    heapq.heappush(heap, item)
+                    selected.add(name)
+                elif item > heap[0]:
+                    _, removed = heapq.heapreplace(heap, item)
+                    selected.remove(removed)
+                    selected.add(name)
+            if process.wait() != 0:
+                raise SystemExit("error: samtools failed while selecting QNAMEs")
+            if len(selected) >= wanted or fraction >= 1.0:
+                return [name for _, name in sorted(heap, reverse=True)]
+            fraction = min(1.0, fraction * 2)
 
     def write_queries(self, names: list[str], max_queries: int) -> None:
         for old in self.queries.glob("rep*_n*.txt"):
@@ -485,7 +564,7 @@ class Benchmark:
     def write_absent_queries(self, max_queries: int) -> None:
         all_names = []
         sizes = sorted({
-            min(size, max_queries) for size in self.requested_query_sizes
+            min(size, max_queries) for size in self.absent_query_sizes
         })
         for replicate in range(1, self.replicates + 1):
             names = [
@@ -715,7 +794,7 @@ class Benchmark:
             rows.append((self.run_id, self.dataset_id, tool, "present", records, digest))
             if tool == expected_tool:
                 expected_hash = digest
-        if self.profile == "full":
+        if self.absent_query_sizes:
             absent = self.absent_query_path(1, self.max_queries())
             absent_methods = [
                 f"qbix:{layout.name}:{order}"
@@ -764,7 +843,7 @@ class Benchmark:
             "query_sha256": sha256_file(names),
             "absent_query_sha256": (
                 sha256_file(self.absent_query_path(1, self.max_queries()))
-                if self.profile == "full" else None
+                if self.absent_query_sizes else None
             ),
             "bri_index_sha256": (
                 sha256_file(self.bri_index)
@@ -831,7 +910,7 @@ class Benchmark:
                         HEADER_QUERY_RUNS,
                         rows,
                     )
-        if self.profile == "full":
+        if self.absent_query_sizes:
             absent_methods = [
                 f"qbix:{layout.name}:{order}"
                 for layout in self.qbix_layouts
@@ -844,7 +923,7 @@ class Benchmark:
             if "bri" in self.tools and self.have_bri:
                 absent_methods.append("bri")
             absent_sizes = sorted({
-                min(size, max_queries) for size in self.requested_query_sizes
+                min(size, max_queries) for size in self.absent_query_sizes
             })
             for replicate in range(1, self.replicates + 1):
                 for count in absent_sizes:
@@ -1144,7 +1223,7 @@ class Benchmark:
                                 format_seconds(
                                     present.get("median_s") if present else None
                                 ),
-                                format_seconds(
+                                format_optional_seconds(
                                     absent.get("median_s") if absent else None
                                 ),
                             ]
@@ -1268,7 +1347,7 @@ class Benchmark:
             "query_sha256": sha256_file(self.query_path(1, self.max_queries())),
             "absent_query_sha256": (
                 sha256_file(self.absent_query_path(1, self.max_queries()))
-                if self.profile == "full" else None
+                if self.absent_query_sizes else None
             ),
             "bri_index_sha256": (
                 sha256_file(self.bri_index)
@@ -1294,6 +1373,14 @@ def validate_id(value: str, what: str) -> str:
             f"error: {what} must contain only letters, digits, '.', '_' or '-'"
         )
     return value
+
+
+def samtools_subsample_argument(seed: int, fraction: float) -> str:
+    if not 0.0 < fraction < 1.0:
+        raise ValueError("samtools subsampling fraction must be between 0 and 1")
+    fraction = min(fraction, 0.999_999_999_999)
+    digits = f"{fraction:.12f}".split(".", 1)[1].rstrip("0")
+    return f"{seed}.{digits or '0'}"
 
 
 def require_command(command: str) -> None:
@@ -1389,10 +1476,16 @@ def format_seconds(value: str | None) -> str:
         return "`[未測定]`"
     seconds = float(value)
     if seconds < 0.01:
-        return f"{seconds:.4f} s"
+        return "<0.01 s"
     if seconds < 10:
         return f"{seconds:.3f} s"
     return f"{seconds:.2f} s"
+
+
+def format_optional_seconds(value: str | None) -> str:
+    if value in (None, ""):
+        return "--"
+    return format_seconds(value)
 
 
 def format_bytes(value: str | None) -> str:
@@ -1530,7 +1623,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--max-index-s", type=float, default=60.0)
     parser.add_argument("--max-scan-s", type=float, default=15.0)
-    parser.add_argument("--profile", choices=("quick", "full"), default="quick")
+    parser.add_argument(
+        "--profile", choices=tuple(BENCHMARK_PROFILES), default="quick"
+    )
     parser.add_argument(
         "--qbix-layouts",
         nargs="+",

@@ -11,8 +11,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  HTSLIB_VERSION: 1.23.2
-  LIBDEFLATE_VERSION: 1.25
+  HTSLIB_VERSION: 1.24
+  LIBDEFLATE_VERSION: 1.26
+  ZLIB_VERSION: 1.3.2
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
@@ -34,6 +35,8 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -59,6 +62,28 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake pkg-config
 
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          echo "CC=musl-gcc" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "${GITHUB_ENV}"
+          echo "RUSTFLAGS=-C target-feature=+crt-static" >> "${GITHUB_ENV}"
+
+      - name: Build static musl zlib
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          curl -fsSL "https://zlib.net/fossils/zlib-${ZLIB_VERSION}.tar.gz" -o "${RUNNER_TEMP}/zlib.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/zlib.tar.gz" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/zlib-${ZLIB_VERSION}"
+          CC=musl-gcc ./configure --static --prefix="${RUNNER_TEMP}/zlib"
+          make -j"$(nproc)"
+          make install
+          test -f "${RUNNER_TEMP}/zlib/lib/libz.a"
+          echo "ZLIB_PREFIX=${RUNNER_TEMP}/zlib" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_LIBDIR=${RUNNER_TEMP}/zlib/lib/pkgconfig:${RUNNER_TEMP}/libdeflate/lib/pkgconfig:${RUNNER_TEMP}/htslib/lib/pkgconfig" >> "${GITHUB_ENV}"
+
       - name: Cache static libdeflate
         id: cache-libdeflate
         uses: actions/cache@v6
@@ -69,9 +94,14 @@ jobs:
       - name: Build static libdeflate on Linux
         if: runner.os == 'Linux' && steps.cache-libdeflate.outputs.cache-hit != 'true'
         run: |
+          compiler=cc
+          if [[ "${{ matrix.target }}" == 'x86_64-unknown-linux-musl' ]]; then
+            compiler=musl-gcc
+          fi
           curl -fsSL "https://github.com/ebiggers/libdeflate/releases/download/v${LIBDEFLATE_VERSION}/libdeflate-${LIBDEFLATE_VERSION}.tar.gz" -o "${RUNNER_TEMP}/libdeflate.tar.gz"
           tar -xzf "${RUNNER_TEMP}/libdeflate.tar.gz" -C "${RUNNER_TEMP}"
           cmake -S "${RUNNER_TEMP}/libdeflate-${LIBDEFLATE_VERSION}" -B "${RUNNER_TEMP}/libdeflate-build" \
+            -DCMAKE_C_COMPILER="${compiler}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/libdeflate" \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -112,13 +142,21 @@ jobs:
       - name: Build static htslib on Linux
         if: runner.os == 'Linux' && steps.cache-htslib.outputs.cache-hit != 'true'
         run: |
+          configure_args=()
+          cppflags="-I${LIBDEFLATE_PREFIX}/include"
+          ldflags="-L${LIBDEFLATE_PREFIX}/lib"
+          if [[ "${{ matrix.target }}" == 'x86_64-unknown-linux-musl' ]]; then
+            configure_args+=(--host=x86_64-linux-musl)
+            cppflags="${cppflags} -I${ZLIB_PREFIX}/include"
+            ldflags="${ldflags} -L${ZLIB_PREFIX}/lib"
+          fi
           curl -fsSL "https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/htslib-${HTSLIB_VERSION}.tar.bz2" -o "${RUNNER_TEMP}/htslib.tar.bz2"
           tar -xjf "${RUNNER_TEMP}/htslib.tar.bz2" -C "${RUNNER_TEMP}"
           cd "${RUNNER_TEMP}/htslib-${HTSLIB_VERSION}"
           CFLAGS="-fPIC" \
-          CPPFLAGS="-I${LIBDEFLATE_PREFIX}/include" \
-          LDFLAGS="-L${LIBDEFLATE_PREFIX}/lib" \
-            ./configure \
+          CPPFLAGS="${cppflags}" \
+          LDFLAGS="${ldflags}" \
+            ./configure "${configure_args[@]}" \
             --prefix="${RUNNER_TEMP}/htslib" \
             --disable-bz2 \
             --disable-gcs \
@@ -163,6 +201,23 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Verify static musl binary
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          cargo build --release --locked --target "${{ matrix.target }}" --bin qbix
+          file "target/${{ matrix.target }}/release/qbix"
+          if readelf -lW "target/${{ matrix.target }}/release/qbix" | grep -q INTERP; then
+            echo 'musl binary has a dynamic interpreter' >&2
+            exit 1
+          fi
+          if readelf -dW "target/${{ matrix.target }}/release/qbix" 2>/dev/null | grep -q NEEDED; then
+            echo 'musl binary has dynamic library dependencies' >&2
+            exit 1
+          fi
+          "target/${{ matrix.target }}/release/qbix" --help >/dev/null
 
       - name: Upload release binary
         uses: taiki-e/upload-rust-binary-action@v1

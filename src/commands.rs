@@ -84,6 +84,7 @@ pub(crate) struct GetOptions<'a> {
     pub(crate) missing_path: Option<&'a str>,
     pub(crate) readnames_path: Option<&'a str>,
     pub(crate) color_mode: ColorMode,
+    pub(crate) command_line: &'a str,
 }
 
 pub(crate) struct BuildIndexOptions<'a> {
@@ -187,6 +188,11 @@ where
         .map_err(|_| format!("[qbix] could not read BAM header: {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let index = Index::load(Some(input_bam), Some(&input_index), Some(bam_metadata))?;
+    let output_header = header.duplicate()?;
+    if options.order == GetOrder::Query {
+        output_header.set_unknown_sort_order()?;
+    }
+    output_header.add_qbix_program(options.command_line)?;
     let mut missing_out = options
         .missing_path
         .map(|path| {
@@ -202,13 +208,13 @@ where
         options.color_mode,
         options.with_header,
         options.threads,
-        &header,
+        &output_header,
     )?;
 
     {
         let mut context = GetContext {
             bam: &bam,
-            header: &header,
+            header: &output_header,
             out: &mut out,
             rec: &rec,
             index: &index,

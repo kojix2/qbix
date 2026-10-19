@@ -26,6 +26,7 @@ extern "C" {
     fn sam_hdr_read(fp: *mut RawHtsFile) -> *mut RawSamHdr;
     fn sam_hdr_write(fp: *mut RawHtsFile, h: *const RawSamHdr) -> c_int;
     fn sam_hdr_destroy(h: *mut RawSamHdr);
+    fn sam_hdr_dup(h: *const RawSamHdr) -> *mut RawSamHdr;
     fn bam_init1() -> *mut RawBam1;
     fn bam_destroy1(b: *mut RawBam1);
     fn sam_read1(fp: *mut RawHtsFile, h: *mut RawSamHdr, b: *mut RawBam1) -> c_int;
@@ -34,6 +35,12 @@ extern "C" {
     fn qbix_hts_shim_bam_qname(b: *mut RawBam1) -> *const c_char;
     fn qbix_hts_shim_sam_hdr_text(h: *const RawSamHdr) -> *const c_char;
     fn qbix_hts_shim_sam_hdr_text_len(h: *const RawSamHdr) -> usize;
+    fn qbix_hts_shim_set_unknown_sort_order(h: *mut RawSamHdr) -> c_int;
+    fn qbix_hts_shim_add_pg(
+        h: *mut RawSamHdr,
+        version: *const c_char,
+        command_line: *const c_char,
+    ) -> c_int;
     fn qbix_hts_shim_bgzf_tell(fp: *mut RawHtsFile) -> i64;
     fn qbix_hts_shim_bgzf_seek(fp: *mut RawHtsFile, offset: i64) -> i64;
     fn qbix_hts_shim_bgzf_set_cache_size(fp: *mut RawHtsFile, size: c_int) -> c_int;
@@ -161,6 +168,32 @@ impl Drop for Header {
 }
 
 impl Header {
+    pub(crate) fn duplicate(&self) -> Result<Self> {
+        let header = unsafe { sam_hdr_dup(self.0) };
+        if header.is_null() {
+            Err("[qbix] could not duplicate BAM header".to_string())
+        } else {
+            Ok(Self(header))
+        }
+    }
+
+    pub(crate) fn set_unknown_sort_order(&self) -> Result<()> {
+        if unsafe { qbix_hts_shim_set_unknown_sort_order(self.0) } < 0 {
+            return Err("[qbix] could not update output sort order".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn add_qbix_program(&self, command_line: &str) -> Result<()> {
+        let version = CString::new(crate::VERSION).expect("package version has no NUL");
+        let command_line = CString::new(command_line)
+            .map_err(|_| "[qbix] command line contains a NUL byte".to_string())?;
+        if unsafe { qbix_hts_shim_add_pg(self.0, version.as_ptr(), command_line.as_ptr()) } < 0 {
+            return Err("[qbix] could not add qbix program record".to_string());
+        }
+        Ok(())
+    }
+
     pub(crate) fn text(&self) -> Result<&[u8]> {
         if self.0.is_null() {
             return Err("[qbix] invalid BAM header".to_string());

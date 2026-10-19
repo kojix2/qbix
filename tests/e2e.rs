@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 
-use common::{write_unmapped_bam, TempDir};
+use common::{read_bam_header, write_unmapped_bam, write_unmapped_bam_with_header, TempDir};
 
 #[test]
 fn indexes_gets_shows_and_checks_a_synthetic_bam() {
@@ -492,7 +492,74 @@ fn get_can_include_the_source_header_in_sam_output() {
         "{}",
         String::from_utf8_lossy(&get.stderr)
     );
-    assert_eq!(first_fields(&get.stdout), ["@HD", "@SQ", "read_a"]);
+    assert_eq!(first_fields(&get.stdout), ["@HD", "@SQ", "@PG", "read_a"]);
+    let text = String::from_utf8_lossy(&get.stdout);
+    assert!(text.contains("@PG\tID:qbix"));
+    assert!(text.contains(concat!("VN:", env!("CARGO_PKG_VERSION"))));
+    assert!(text.contains("PN:qbix"));
+    assert!(text.contains("CL:"));
+}
+
+#[test]
+fn get_updates_output_header_for_query_and_bam_order() {
+    let temp = TempDir::new("get-header");
+    let input = temp.path().join("input.bam");
+    let query = temp.path().join("query.bam");
+    let bam_order = temp.path().join("bam-order.bam");
+    let input = input.to_str().unwrap();
+    let query = query.to_str().unwrap();
+    let bam_order = bam_order.to_str().unwrap();
+    write_unmapped_bam_with_header(
+        input,
+        &["read_b", "read_a"],
+        "@HD\tVN:1.6\tSO:coordinate\tSS:coordinate:minhash\tGO:query\n@SQ\tSN:chr1\tLN:1000\n@PG\tID:qbix\tPN:old\n",
+    );
+    assert_success(Command::new(qbix()).args(["index", input]));
+
+    assert_success(
+        Command::new(qbix()).args(["get", input, "read_a", "read_b", "-Ob", "-o", query]),
+    );
+    let query_header = read_bam_header(query);
+    assert!(query_header.contains("@HD\tVN:1.6\tSO:unknown\n"));
+    assert!(!query_header.contains("SS:"));
+    assert!(!query_header.contains("GO:"));
+    assert!(query_header.contains("@PG\tID:qbix\tPN:old"));
+    assert!(query_header.contains("@PG\tID:qbix.1"));
+    assert!(query_header.contains("PN:qbix"));
+    assert!(query_header.contains("PP:qbix"));
+    assert!(query_header.contains(concat!("VN:", env!("CARGO_PKG_VERSION"))));
+    assert!(query_header.contains("CL:"));
+    assert!(query_header.contains("'read_a' 'read_b'"));
+    let input_header = read_bam_header(input);
+    assert!(!input_header.contains("@PG\tID:qbix.1"));
+    assert!(input_header.contains("SO:coordinate\tSS:coordinate:minhash\tGO:query"));
+
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--bam-order",
+        input,
+        "read_a",
+        "read_b",
+        "-Ob",
+        "-o",
+        bam_order,
+    ]));
+    let ordered_header = read_bam_header(bam_order);
+    assert!(ordered_header.contains("SO:coordinate\tSS:coordinate:minhash\tGO:query"));
+    assert!(ordered_header.contains("@PG\tID:qbix.1"));
+}
+
+#[test]
+fn get_adds_hd_when_input_has_none() {
+    let temp = TempDir::new("get-no-hd");
+    let input = temp.path().join("input.bam");
+    let output = temp.path().join("output.bam");
+    let input = input.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_unmapped_bam_with_header(input, &["read_a"], "@SQ\tSN:chr1\tLN:1000\n");
+    assert_success(Command::new(qbix()).args(["index", input]));
+    assert_success(Command::new(qbix()).args(["get", input, "read_a", "-Ob", "-o", output]));
+    assert!(read_bam_header(output).starts_with("@HD\tVN:1.6\tSO:unknown\n"));
 }
 
 #[test]

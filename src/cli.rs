@@ -60,6 +60,8 @@ pub fn run<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = String>,
 {
+    let args = args.into_iter().collect::<Vec<_>>();
+    let command_line = format_command_line(&args);
     match parse_args(args)? {
         Action::Index {
             input_bam,
@@ -86,7 +88,7 @@ where
                 qbi2_radix_bits,
             },
         ),
-        Action::Get(action) => run_get(action),
+        Action::Get(action) => run_get(action, &command_line),
         Action::Show { input_index } => commands::show_index(&input_index),
         Action::Check {
             input_bam,
@@ -312,7 +314,7 @@ fn get_command() -> Command {
             Arg::new(ARG_WITH_HEADER)
                 .long("with-header")
                 .action(ArgAction::SetTrue)
-                .help("Include the source BAM header in SAM output"),
+                .help("Include a SAM header with qbix provenance"),
         )
         .arg(
             Arg::new(ARG_OUTPUT_BAM)
@@ -746,7 +748,7 @@ fn optional_values(matches: &ArgMatches, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn run_get(action: GetAction) -> Result<()> {
+fn run_get(action: GetAction, command_line: &str) -> Result<()> {
     let GetAction {
         input_bam,
         input_index,
@@ -772,6 +774,7 @@ fn run_get(action: GetAction) -> Result<()> {
         missing_path: missing_path.as_deref(),
         readnames_path: readnames_file.as_deref().filter(|path| *path != "-"),
         color_mode,
+        command_line,
     };
     let positional = readnames.into_iter().map(Ok);
 
@@ -792,6 +795,20 @@ fn run_get(action: GetAction) -> Result<()> {
             commands::get_records(&input_bam, positional.chain(from_file), options)
         }
     }
+}
+
+fn format_command_line(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            let escaped = arg
+                .replace('\'', "'\\''")
+                .replace('\t', "\\t")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r");
+            format!("'{escaped}'")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn readnames_from_reader<R>(reader: R) -> impl Iterator<Item = Result<String>>

@@ -42,6 +42,23 @@ size_t qbix_hts_shim_sam_hdr_text_len(const sam_hdr_t *h)
     return sam_hdr_length((sam_hdr_t *)h);
 }
 
+int qbix_hts_shim_set_unknown_sort_order(sam_hdr_t *h)
+{
+    if (sam_hdr_count_lines(h, "HD") == 0) {
+        if (sam_hdr_add_line(h, "HD", "VN", "1.6", "SO", "unknown", NULL) < 0)
+            return -1;
+    } else if (sam_hdr_update_hd(h, "SO", "unknown") < 0) {
+        return -1;
+    }
+    if (sam_hdr_remove_tag_hd(h, "SS") < 0) return -1;
+    return sam_hdr_remove_tag_hd(h, "GO") < 0 ? -1 : 0;
+}
+
+int qbix_hts_shim_add_pg(sam_hdr_t *h, const char *version, const char *command_line)
+{
+    return sam_hdr_add_pg(h, "qbix", "VN", version, "CL", command_line, NULL);
+}
+
 int qbix_hts_shim_sam_format1(const sam_hdr_t *h, const bam1_t *b, char **out, size_t *len)
 {
     kstring_t str = {0, 0, 0};

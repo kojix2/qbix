@@ -27,6 +27,10 @@ extern "C" {
     fn hts_open(path: *const c_char, mode: *const c_char) -> *mut RawHtsFile;
     fn hts_close(fp: *mut RawHtsFile) -> c_int;
     fn sam_hdr_parse(l_text: usize, text: *const c_char) -> *mut RawSamHdr;
+    #[allow(dead_code)]
+    fn sam_hdr_read(fp: *mut RawHtsFile) -> *mut RawSamHdr;
+    #[allow(dead_code)]
+    fn sam_hdr_str(h: *mut RawSamHdr) -> *const c_char;
     fn sam_hdr_write(fp: *mut RawHtsFile, h: *const RawSamHdr) -> c_int;
     fn sam_hdr_destroy(h: *mut RawSamHdr);
     fn bam_init1() -> *mut RawBam1;
@@ -79,8 +83,16 @@ impl Drop for TempDir {
 }
 
 pub fn write_unmapped_bam(path: &str, readnames: &[&str]) {
+    write_unmapped_bam_with_header(
+        path,
+        readnames,
+        "@HD\tVN:1.6\tSO:unknown\n@SQ\tSN:chr1\tLN:1000\n",
+    );
+}
+
+pub fn write_unmapped_bam_with_header(path: &str, readnames: &[&str], header_text: &str) {
     let bam = HtsFile::open(path, "wb");
-    let header = Header::parse("@HD\tVN:1.6\tSO:unknown\n@SQ\tSN:chr1\tLN:1000\n");
+    let header = Header::parse(header_text);
     assert_eq!(unsafe { sam_hdr_write(bam.0, header.0) }, 0);
 
     let record = BamRecord::new();
@@ -88,6 +100,19 @@ pub fn write_unmapped_bam(path: &str, readnames: &[&str]) {
         record.set_unmapped(readname);
         assert!(unsafe { sam_write1(bam.0, header.0, record.0) } >= 0);
     }
+}
+
+#[allow(dead_code)]
+pub fn read_bam_header(path: &str) -> String {
+    let bam = HtsFile::open(path, "rb");
+    let header = Header(unsafe { sam_hdr_read(bam.0) });
+    assert!(!header.0.is_null());
+    let text = unsafe { sam_hdr_str(header.0) };
+    assert!(!text.is_null());
+    unsafe { std::ffi::CStr::from_ptr(text) }
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 struct HtsFile(*mut RawHtsFile);

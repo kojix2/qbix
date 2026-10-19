@@ -9,6 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   HTSLIB_VERSION: 1.24
   LIBDEFLATE_VERSION: 1.26
+  ZLIB_VERSION: 1.3.2
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
@@ -232,3 +233,111 @@ jobs:
             error.log
             linkage.txt
             c-library-symbols.txt
+
+  musl-artifact:
+    name: x86_64 Linux musl artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bzip2 ca-certificates cmake curl musl-tools pkg-config
+
+      - name: Cache musl libraries
+        id: cache-musl-libs
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/zlib
+            ${{ runner.temp }}/libdeflate
+            ${{ runner.temp }}/htslib
+          key: musl-libs-zlib-${{ env.ZLIB_VERSION }}-libdeflate-${{ env.LIBDEFLATE_VERSION }}-htslib-${{ env.HTSLIB_VERSION }}
+
+      - name: Build musl libraries
+        if: steps.cache-musl-libs.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://zlib.net/fossils/zlib-${ZLIB_VERSION}.tar.gz" -o "${RUNNER_TEMP}/zlib.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/zlib.tar.gz" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/zlib-${ZLIB_VERSION}"
+          CC=musl-gcc ./configure --static --prefix="${RUNNER_TEMP}/zlib"
+          make -j"$(nproc)"
+          make install
+
+          curl -fsSL "https://github.com/ebiggers/libdeflate/releases/download/v${LIBDEFLATE_VERSION}/libdeflate-${LIBDEFLATE_VERSION}.tar.gz" -o "${RUNNER_TEMP}/libdeflate.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/libdeflate.tar.gz" -C "${RUNNER_TEMP}"
+          cmake -S "${RUNNER_TEMP}/libdeflate-${LIBDEFLATE_VERSION}" -B "${RUNNER_TEMP}/libdeflate-build" \
+            -DCMAKE_C_COMPILER=musl-gcc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/libdeflate" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
+            -DLIBDEFLATE_BUILD_GZIP=OFF \
+            -DLIBDEFLATE_BUILD_TESTS=OFF
+          cmake --build "${RUNNER_TEMP}/libdeflate-build" --parallel "$(nproc)"
+          cmake --install "${RUNNER_TEMP}/libdeflate-build"
+
+          export PKG_CONFIG_PATH="${RUNNER_TEMP}/zlib/lib/pkgconfig:${RUNNER_TEMP}/libdeflate/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="${PKG_CONFIG_PATH}"
+          curl -fsSL "https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/htslib-${HTSLIB_VERSION}.tar.bz2" -o "${RUNNER_TEMP}/htslib.tar.bz2"
+          tar -xjf "${RUNNER_TEMP}/htslib.tar.bz2" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/htslib-${HTSLIB_VERSION}"
+          CC=musl-gcc \
+          CFLAGS="-fPIC" \
+          CPPFLAGS="-I${RUNNER_TEMP}/libdeflate/include -I${RUNNER_TEMP}/zlib/include" \
+          LDFLAGS="-L${RUNNER_TEMP}/libdeflate/lib -L${RUNNER_TEMP}/zlib/lib" \
+            ./configure --host=x86_64-linux-musl \
+            --prefix="${RUNNER_TEMP}/htslib" \
+            --disable-bz2 \
+            --disable-gcs \
+            --disable-libcurl \
+            --disable-lzma \
+            --disable-plugins \
+            --disable-ref-cache \
+            --disable-s3 \
+            --with-libdeflate
+          make -j"$(nproc)"
+          make install
+
+      - name: Use musl libraries
+        run: |
+          test -f "${RUNNER_TEMP}/zlib/lib/libz.a"
+          test -f "${RUNNER_TEMP}/libdeflate/lib/libdeflate.a"
+          test -f "${RUNNER_TEMP}/htslib/lib/libhts.a"
+          echo "CC=musl-gcc" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "${GITHUB_ENV}"
+          echo "RUSTFLAGS=-C target-feature=+crt-static" >> "${GITHUB_ENV}"
+          echo "ZLIB_PREFIX=${RUNNER_TEMP}/zlib" >> "${GITHUB_ENV}"
+          echo "LIBDEFLATE_PREFIX=${RUNNER_TEMP}/libdeflate" >> "${GITHUB_ENV}"
+          echo "HTSDIR=${RUNNER_TEMP}/htslib" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_PATH=${RUNNER_TEMP}/htslib/lib/pkgconfig:${RUNNER_TEMP}/libdeflate/lib/pkgconfig:${RUNNER_TEMP}/zlib/lib/pkgconfig" >> "${GITHUB_ENV}"
+          echo "PKG_CONFIG_LIBDIR=${RUNNER_TEMP}/htslib/lib/pkgconfig:${RUNNER_TEMP}/libdeflate/lib/pkgconfig:${RUNNER_TEMP}/zlib/lib/pkgconfig" >> "${GITHUB_ENV}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Build and verify static binary
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl --bin qbix
+          binary=target/x86_64-unknown-linux-musl/release/qbix
+          file "${binary}"
+          if readelf -lW "${binary}" | grep -q INTERP; then
+            echo 'musl binary has a dynamic interpreter' >&2
+            exit 1
+          fi
+          if readelf -dW "${binary}" 2>/dev/null | grep -q NEEDED; then
+            echo 'musl binary has dynamic library dependencies' >&2
+            exit 1
+          fi
+          "${binary}" --help >/dev/null
+
+      - name: Upload Linux binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: qbix-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/qbix

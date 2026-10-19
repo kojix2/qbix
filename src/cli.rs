@@ -30,6 +30,7 @@ const ARG_QBI2_RADIX_BITS: &str = "qbi2_radix_bits";
 const ARG_VERBOSE: &str = "verbose";
 const ARG_BAM_ORDER: &str = "bam_order";
 const ARG_QUERY_ORDER: &str = "query_order";
+const ARG_NO_INDEX: &str = "no_index";
 const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_UNIQUE: &str = "unique";
 const ARG_MISSING: &str = "missing";
@@ -188,6 +189,7 @@ struct GetAction {
     with_header: bool,
     threads: usize,
     order: GetOrder,
+    no_index: bool,
     output_format: OutputFormat,
     output_path: Option<String>,
     missing_path: Option<String>,
@@ -208,20 +210,24 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
             index_format: index_format(matches)?,
             qbi2_radix_bits: qbi2_radix_bits(matches)?,
         }),
-        Some((COMMAND_GET, matches)) => Ok(Action::Get(GetAction {
-            input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
-            input_index: optional_string(matches, ARG_INDEX),
-            readnames: optional_values(matches, ARG_READNAMES),
-            readnames_file: optional_string(matches, ARG_READNAMES_FILE),
-            unique: matches.get_flag(ARG_UNIQUE),
-            with_header: matches.get_flag(ARG_WITH_HEADER),
-            threads: threads(matches, 1)?,
-            order: get_order(matches),
-            output_format: output_format(matches)?,
-            output_path: optional_string(matches, ARG_OUTPUT),
-            missing_path: optional_string(matches, ARG_MISSING),
-            color_mode: color_mode(matches)?,
-        })),
+        Some((COMMAND_GET, matches)) => {
+            let output_format = output_format(matches)?;
+            Ok(Action::Get(GetAction {
+                input_bam: required_string(matches, ARG_INPUT_BAM)?.to_string(),
+                input_index: optional_string(matches, ARG_INDEX),
+                readnames: optional_values(matches, ARG_READNAMES),
+                readnames_file: optional_string(matches, ARG_READNAMES_FILE),
+                unique: matches.get_flag(ARG_UNIQUE),
+                with_header: matches.get_flag(ARG_WITH_HEADER),
+                threads: threads(matches, 1)?,
+                order: get_order(matches, output_format),
+                no_index: matches.get_flag(ARG_NO_INDEX),
+                output_format,
+                output_path: optional_string(matches, ARG_OUTPUT),
+                missing_path: optional_string(matches, ARG_MISSING),
+                color_mode: color_mode(matches)?,
+            }))
+        }
         Some((COMMAND_SHOW, matches)) => Ok(Action::Show {
             input_index: required_string(matches, ARG_INPUT_INDEX)?.to_string(),
         }),
@@ -281,15 +287,21 @@ fn get_command() -> Command {
             Arg::new(ARG_BAM_ORDER)
                 .long("bam-order")
                 .action(ArgAction::SetTrue)
-                .help("Emit records in BAM order")
+                .help("Emit records in BAM order (default for BAM output)")
                 .conflicts_with(ARG_QUERY_ORDER),
         )
         .arg(
             Arg::new(ARG_QUERY_ORDER)
                 .long("query-order")
                 .action(ArgAction::SetTrue)
-                .help("Emit records in query order")
+                .help("Emit records in query order (default for SAM output)")
                 .conflicts_with(ARG_BAM_ORDER),
+        )
+        .arg(
+            Arg::new(ARG_NO_INDEX)
+                .long("no-index")
+                .action(ArgAction::SetTrue)
+                .help("Do not write a coordinate index for BAM file output"),
         )
         .arg(
             Arg::new(ARG_READNAMES_FILE)
@@ -683,8 +695,10 @@ fn parse_size(value: &str) -> Result<usize> {
     Ok(bytes)
 }
 
-fn get_order(matches: &ArgMatches) -> GetOrder {
-    if matches.get_flag(ARG_BAM_ORDER) {
+fn get_order(matches: &ArgMatches, output_format: OutputFormat) -> GetOrder {
+    if matches.get_flag(ARG_QUERY_ORDER) {
+        GetOrder::Query
+    } else if matches.get_flag(ARG_BAM_ORDER) || output_format == OutputFormat::Bam {
         GetOrder::Bam
     } else {
         GetOrder::Query
@@ -758,6 +772,7 @@ fn run_get(action: GetAction, command_line: &str) -> Result<()> {
         with_header,
         threads,
         order,
+        no_index,
         output_format,
         output_path,
         missing_path,
@@ -767,6 +782,7 @@ fn run_get(action: GetAction, command_line: &str) -> Result<()> {
         input_index: input_index.as_deref(),
         threads,
         order,
+        no_index,
         unique,
         with_header,
         output_format,
@@ -969,6 +985,7 @@ mod tests {
                 with_header: false,
                 threads: 4,
                 order: GetOrder::Query,
+                no_index: false,
                 output_format: OutputFormat::Sam,
                 output_path: None,
                 missing_path: None,
@@ -1003,7 +1020,8 @@ mod tests {
                 unique: false,
                 with_header: true,
                 threads: 1,
-                order: GetOrder::Query,
+                order: GetOrder::Bam,
+                no_index: false,
                 output_format: OutputFormat::Bam,
                 output_path: Some("hits.bam".to_string()),
                 missing_path: Some("missing.txt".to_string()),
@@ -1026,13 +1044,33 @@ mod tests {
                 unique: false,
                 with_header: false,
                 threads: 1,
-                order: GetOrder::Query,
+                order: GetOrder::Bam,
+                no_index: false,
                 output_format: OutputFormat::Bam,
                 output_path: None,
                 missing_path: None,
                 color_mode: ColorMode::Auto,
             })
         );
+    }
+
+    #[test]
+    fn explicit_query_order_and_no_index_override_bam_defaults() {
+        let action = parse_args(strings([
+            "qbix",
+            "get",
+            "--query-order",
+            "--no-index",
+            "-b",
+            "reads.bam",
+            "read1",
+        ]))
+        .unwrap();
+        let Action::Get(action) = action else {
+            panic!("expected get action");
+        };
+        assert_eq!(action.order, GetOrder::Query);
+        assert!(action.no_index);
     }
 
     #[test]
@@ -1058,6 +1096,7 @@ mod tests {
                 with_header: false,
                 threads: 1,
                 order: GetOrder::Query,
+                no_index: false,
                 output_format: OutputFormat::Sam,
                 output_path: None,
                 missing_path: None,

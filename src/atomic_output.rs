@@ -31,6 +31,22 @@ impl AtomicOutput {
             }
         };
         let destination = resolved.as_deref().unwrap_or(requested);
+        match fs::metadata(destination) {
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(format!(
+                    "[qbix] output is not a regular file: {}",
+                    destination.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not inspect output {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         let name = destination
             .file_name()

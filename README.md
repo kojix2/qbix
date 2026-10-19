@@ -183,6 +183,13 @@ qbix get reads.bam -f names.txt -b -o hits.bam
 qbix get reads.bam -f names.txt -Ob -o hits.bam
 ```
 
+BAM output defaults to BAM file order. When the input header declares
+`SO:coordinate` and the BAM is written to a file, qbix builds a `.bai` index
+alongside it (or `.csi` when a reference is longer than 512 Mbp). Use
+`--no-index` to skip the index, or `--query-order` to request query-order BAM
+output; query-order output is not indexed. BAM output to stdout has no sidecar
+index.
+
 When `-o` names a file, qbix writes to a temporary file beside it and replaces
 the destination only after successful output. A read or write error leaves an
 existing output file untouched. The same applies to `--missing` reports; when
@@ -214,7 +221,7 @@ qbix get -i reads.qbi reads.bam read_a
 
 ## Output Order
 
-Default output is query order:
+SAM output defaults to query order:
 
 ```sh
 qbix get reads.bam read_a read_b
@@ -233,7 +240,8 @@ This can reduce random seeking:
 qbix get --bam-order reads.bam read_a read_b
 ```
 
-`--bam-order` must collect the input names and sort matching hits before output.
+This is also the default for BAM output. `--bam-order` must collect the input
+names and sort matching hits before output, including when names come from stdin.
 
 If name-sorted output is needed, sort downstream:
 

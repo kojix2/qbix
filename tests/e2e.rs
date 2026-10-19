@@ -4,7 +4,10 @@ use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 
-use common::{read_bam_header, write_unmapped_bam, write_unmapped_bam_with_header, TempDir};
+use common::{
+    bam_index_loads, count_region, read_bam_header, write_coordinate_bam, write_unmapped_bam,
+    write_unmapped_bam_with_header, TempDir,
+};
 
 #[test]
 fn indexes_gets_shows_and_checks_a_synthetic_bam() {
@@ -517,9 +520,16 @@ fn get_updates_output_header_for_query_and_bam_order() {
     );
     assert_success(Command::new(qbix()).args(["index", input]));
 
-    assert_success(
-        Command::new(qbix()).args(["get", input, "read_a", "read_b", "-Ob", "-o", query]),
-    );
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--query-order",
+        input,
+        "read_a",
+        "read_b",
+        "-Ob",
+        "-o",
+        query,
+    ]));
     let query_header = read_bam_header(query);
     assert!(query_header.contains("@HD\tVN:1.6\tSO:unknown\n"));
     assert!(!query_header.contains("SS:"));
@@ -551,6 +561,147 @@ fn get_updates_output_header_for_query_and_bam_order() {
 }
 
 #[test]
+fn bam_output_defaults_to_source_order_and_writes_bai() {
+    let temp = TempDir::new("default-bam-index");
+    let input = temp.path().join("input.bam");
+    let output = temp.path().join("output.bam");
+    let no_index = temp.path().join("no-index.bam");
+    let query = temp.path().join("query.bam");
+    let input = input.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    let no_index = no_index.to_str().unwrap();
+    let query = query.to_str().unwrap();
+    write_coordinate_bam(input, &[("read_b", 10), ("read_a", 100)]);
+    assert_success(Command::new(qbix()).args(["index", input]));
+
+    fs::write(format!("{output}.bai"), b"stale index").unwrap();
+    fs::write(format!("{output}.csi"), b"stale index").unwrap();
+    assert_success(Command::new(qbix()).args([
+        "get", "-@", "2", input, "read_a", "read_b", "-Ob", "-o", output,
+    ]));
+    assert!(fs::metadata(format!("{output}.bai")).is_ok());
+    assert!(!std::path::Path::new(&format!("{output}.csi")).exists());
+    assert!(bam_index_loads(output));
+    assert_eq!(count_region(output, 10, 11), 1);
+    assert_eq!(count_region(output, 100, 101), 1);
+    assert_success(Command::new(qbix()).args(["index", output]));
+    let ordered = Command::new(qbix())
+        .args(["get", "--bam-order", output, "read_a", "read_b"])
+        .output()
+        .unwrap();
+    assert!(
+        ordered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ordered.stderr)
+    );
+    assert_eq!(first_fields(&ordered.stdout), ["read_b", "read_a"]);
+
+    fs::write(format!("{no_index}.bai"), b"stale index").unwrap();
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--no-index",
+        input,
+        "read_a",
+        "read_b",
+        "-Ob",
+        "-o",
+        no_index,
+    ]));
+    assert!(!std::path::Path::new(&format!("{no_index}.bai")).exists());
+    fs::write(format!("{query}.bai"), b"stale index").unwrap();
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--query-order",
+        input,
+        "read_a",
+        "read_b",
+        "-Ob",
+        "-o",
+        query,
+    ]));
+    assert!(!std::path::Path::new(&format!("{query}.bai")).exists());
+}
+
+#[test]
+fn bam_output_uses_csi_for_long_references() {
+    let temp = TempDir::new("default-csi-index");
+    let input = temp.path().join("input.bam");
+    let output = temp.path().join("output.bam");
+    let input = input.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_unmapped_bam_with_header(
+        input,
+        &["read_a"],
+        "@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:536870913\n",
+    );
+    assert_success(Command::new(qbix()).args(["index", input]));
+    assert_success(Command::new(qbix()).args(["get", input, "read_a", "-Ob", "-o", output]));
+    assert!(fs::metadata(format!("{output}.csi")).is_ok());
+    assert!(bam_index_loads(output));
+}
+
+#[test]
+fn bam_indexing_failure_preserves_existing_bam_and_index() {
+    let temp = TempDir::new("indexed-output-failure");
+    let input = temp.path().join("input.bam");
+    let names = temp.path().join("names.txt");
+    let output = temp.path().join("output.bam");
+    let input = input.to_str().unwrap();
+    let names = names.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_coordinate_bam(input, &[("read_a", 10)]);
+    fs::write(names, b"read_a\n\xff\n").unwrap();
+    fs::write(output, b"old BAM").unwrap();
+    fs::write(format!("{output}.bai"), b"old BAI").unwrap();
+    assert_success(Command::new(qbix()).args(["index", input]));
+    let get = Command::new(qbix())
+        .args(["get", input, "-f", names, "-Ob", "-o", output])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert_eq!(fs::read(output).unwrap(), b"old BAM");
+    assert_eq!(fs::read(format!("{output}.bai")).unwrap(), b"old BAI");
+}
+
+#[test]
+fn bam_output_rejects_non_file_index_sidecar_before_replacing_bam() {
+    let temp = TempDir::new("non-file-bam-index");
+    let input = temp.path().join("input.bam");
+    let output = temp.path().join("output.bam");
+    let input = input.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_coordinate_bam(input, &[("read_a", 10)]);
+    fs::write(output, b"old BAM").unwrap();
+    fs::create_dir(format!("{output}.csi")).unwrap();
+    assert_success(Command::new(qbix()).args(["index", input]));
+    let get = Command::new(qbix())
+        .args(["get", input, "read_a", "-Ob", "-o", output])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert_eq!(fs::read(output).unwrap(), b"old BAM");
+    assert!(!std::path::Path::new(&format!("{output}.bai")).exists());
+}
+
+#[test]
+fn bam_output_rejects_records_out_of_coordinate_order() {
+    let temp = TempDir::new("unsorted-coordinate-bam");
+    let input = temp.path().join("input.bam");
+    let output = temp.path().join("output.bam");
+    let input = input.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_coordinate_bam(input, &[("read_a", 100), ("read_b", 10)]);
+    fs::write(output, b"old BAM").unwrap();
+    assert_success(Command::new(qbix()).args(["index", input]));
+    let get = Command::new(qbix())
+        .args(["get", input, "read_a", "read_b", "-Ob", "-o", output])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert_eq!(fs::read(output).unwrap(), b"old BAM");
+}
+
+#[test]
 fn get_adds_hd_when_input_has_none() {
     let temp = TempDir::new("get-no-hd");
     let input = temp.path().join("input.bam");
@@ -559,7 +710,15 @@ fn get_adds_hd_when_input_has_none() {
     let output = output.to_str().unwrap();
     write_unmapped_bam_with_header(input, &["read_a"], "@SQ\tSN:chr1\tLN:1000\n");
     assert_success(Command::new(qbix()).args(["index", input]));
-    assert_success(Command::new(qbix()).args(["get", input, "read_a", "-Ob", "-o", output]));
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--query-order",
+        input,
+        "read_a",
+        "-Ob",
+        "-o",
+        output,
+    ]));
     assert!(read_bam_header(output).starts_with("@HD\tVN:1.6\tSO:unknown\n"));
 }
 

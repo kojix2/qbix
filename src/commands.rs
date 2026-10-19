@@ -6,6 +6,7 @@ use crate::index::{
     BucketIndexBuilder, Index, IndexFormat,
 };
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,7 @@ pub(crate) struct GetOptions<'a> {
     pub(crate) input_index: Option<&'a str>,
     pub(crate) threads: usize,
     pub(crate) order: GetOrder,
+    pub(crate) no_index: bool,
     pub(crate) unique: bool,
     pub(crate) with_header: bool,
     pub(crate) output_format: OutputFormat,
@@ -179,6 +181,18 @@ where
         options.missing_path,
         options.readnames_path,
     )?;
+    let bam_sidecars = (options.output_format == OutputFormat::Bam && output_path != "-")
+        .then(|| [format!("{output_path}.bai"), format!("{output_path}.csi")]);
+    if let Some(sidecars) = &bam_sidecars {
+        validate_bam_sidecar_paths(
+            sidecars,
+            input_bam,
+            &input_index,
+            output_path,
+            options.missing_path,
+            options.readnames_path,
+        )?;
+    }
 
     let bam = HtsFile::open(input_bam, "r")
         .map_err(|_| format!("[qbix] could not open BAM file: {input_bam}"))?;
@@ -194,6 +208,18 @@ where
         output_header.set_unknown_sort_order()?;
     }
     output_header.add_qbix_program(options.command_line)?;
+    let index_extension = if bam_sidecars.is_some()
+        && options.order == GetOrder::Bam
+        && !options.no_index
+        && header.is_coordinate_sorted()?
+    {
+        Some(if header.needs_csi()? { "csi" } else { "bai" })
+    } else {
+        None
+    };
+    let index_atomic = index_extension
+        .map(|extension| AtomicOutput::new(&format!("{output_path}.{extension}")))
+        .transpose()?;
     let atomic_output = (output_path != "-")
         .then(|| AtomicOutput::new(output_path))
         .transpose()?;
@@ -220,6 +246,11 @@ where
         options.with_header,
         options.threads,
         &output_header,
+        index_atomic
+            .as_ref()
+            .map(AtomicOutput::path)
+            .transpose()?
+            .map(|path| (path, index_extension == Some("csi"))),
     )?;
 
     {
@@ -253,6 +284,72 @@ where
     }
     if let Some(atomic_output) = atomic_output {
         atomic_output.commit()?;
+    }
+    if let Some(sidecars) = bam_sidecars {
+        for (sidecar, extension) in sidecars.iter().zip(["bai", "csi"]) {
+            if index_extension == Some(extension) {
+                continue;
+            }
+            match std::fs::remove_file(sidecar) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "[qbix] could not remove stale index {sidecar}: {error}"
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(index_atomic) = index_atomic {
+        if let Err(error) = index_atomic.commit() {
+            if let Some(extension) = index_extension {
+                let _ = std::fs::remove_file(format!("{output_path}.{extension}"));
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn validate_bam_sidecar_paths(
+    sidecars: &[String; 2],
+    input_bam: &str,
+    input_index: &str,
+    output_path: &str,
+    missing_path: Option<&str>,
+    readnames_path: Option<&str>,
+) -> Result<()> {
+    for sidecar in sidecars {
+        match std::fs::symlink_metadata(sidecar) {
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(format!(
+                    "[qbix] output index is not a regular file: {sidecar}"
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not inspect output index {sidecar}: {error}"
+                ));
+            }
+        }
+        for (label, protected) in [
+            ("input BAM", Some(input_bam)),
+            ("input index", Some(input_index)),
+            ("output BAM", Some(output_path)),
+            ("missing QNAME output", missing_path),
+            ("read-name input", readnames_path),
+        ] {
+            if protected
+                .is_some_and(|path| paths_refer_to_same_file(Path::new(sidecar), Path::new(path)))
+            {
+                return Err(format!(
+                    "[qbix] output index must not overwrite the {label}: {sidecar}"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -440,7 +537,10 @@ fn flush_missing_qnames(missing_out: &mut Option<MissingWriter>) -> Result<()> {
 }
 
 enum RecordWriter {
-    Hts(HtsFile),
+    Hts {
+        file: HtsFile,
+        index_path: Option<CString>,
+    },
     #[cfg(feature = "biosyntax")]
     Colored(ColorSamWriter),
 }
@@ -453,6 +553,7 @@ impl RecordWriter {
         with_header: bool,
         threads: usize,
         header: &Header,
+        index_output: Option<(&str, bool)>,
     ) -> Result<Self> {
         if should_color(output_format, color_mode, output_path) {
             #[cfg(feature = "biosyntax")]
@@ -483,12 +584,25 @@ impl RecordWriter {
         if output_format == OutputFormat::Bam || with_header {
             out.write_header(header)?;
         }
-        Ok(Self::Hts(out))
+        let index_path = index_output
+            .map(|(path, csi)| {
+                CString::new(path)
+                    .map(|path| (path, csi))
+                    .map_err(|_| "[qbix] index path contains NUL".to_string())
+            })
+            .transpose()?;
+        if let Some((path, csi)) = &index_path {
+            out.start_index(header, path, *csi)?;
+        }
+        Ok(Self::Hts {
+            file: out,
+            index_path: index_path.map(|(path, _)| path),
+        })
     }
 
     fn write_record(&mut self, header: &Header, rec: &BamRecord) -> Result<()> {
         match self {
-            Self::Hts(out) => out.write_record(header, rec),
+            Self::Hts { file, .. } => file.write_record(header, rec),
             #[cfg(feature = "biosyntax")]
             Self::Colored(out) => out.write_record(header, rec),
         }
@@ -496,7 +610,12 @@ impl RecordWriter {
 
     fn finish(self) -> Result<()> {
         match self {
-            Self::Hts(out) => out.close(),
+            Self::Hts { file, index_path } => {
+                if index_path.is_some() {
+                    file.save_index()?;
+                }
+                file.close()
+            }
             #[cfg(feature = "biosyntax")]
             Self::Colored(mut out) => out
                 .writer

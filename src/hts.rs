@@ -27,6 +27,15 @@ extern "C" {
     fn sam_hdr_write(fp: *mut RawHtsFile, h: *const RawSamHdr) -> c_int;
     fn sam_hdr_destroy(h: *mut RawSamHdr);
     fn sam_hdr_dup(h: *const RawSamHdr) -> *mut RawSamHdr;
+    fn sam_hdr_nref(h: *const RawSamHdr) -> c_int;
+    fn sam_hdr_tid2len(h: *const RawSamHdr, tid: c_int) -> i64;
+    fn sam_idx_init(
+        fp: *mut RawHtsFile,
+        h: *mut RawSamHdr,
+        min_shift: c_int,
+        fnidx: *const c_char,
+    ) -> c_int;
+    fn sam_idx_save(fp: *mut RawHtsFile) -> c_int;
     fn bam_init1() -> *mut RawBam1;
     fn bam_destroy1(b: *mut RawBam1);
     fn sam_read1(fp: *mut RawHtsFile, h: *mut RawSamHdr, b: *mut RawBam1) -> c_int;
@@ -64,6 +73,21 @@ impl HtsFile {
         let file = std::mem::replace(&mut self.0, std::ptr::null_mut());
         if unsafe { hts_close(file) } < 0 {
             return Err("[qbix] could not close alignment output".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_index(&self, header: &Header, path: &CStr, csi: bool) -> Result<()> {
+        let min_shift = if csi { 14 } else { 0 };
+        if unsafe { sam_idx_init(self.0, header.0, min_shift, path.as_ptr()) } < 0 {
+            return Err("[qbix] could not initialize BAM coordinate index".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn save_index(&self) -> Result<()> {
+        if unsafe { sam_idx_save(self.0) } < 0 {
+            return Err("[qbix] could not write BAM coordinate index".to_string());
         }
         Ok(())
     }
@@ -176,6 +200,28 @@ impl Drop for Header {
 }
 
 impl Header {
+    pub(crate) fn is_coordinate_sorted(&self) -> Result<bool> {
+        Ok(self.text()?.split(|byte| *byte == b'\n').any(|line| {
+            line.starts_with(b"@HD\t")
+                && line
+                    .split(|byte| *byte == b'\t')
+                    .any(|field| field == b"SO:coordinate")
+        }))
+    }
+
+    pub(crate) fn needs_csi(&self) -> Result<bool> {
+        let nref = unsafe { sam_hdr_nref(self.0) };
+        if nref < 0 {
+            return Err("[qbix] could not inspect BAM references".to_string());
+        }
+        for tid in 0..nref {
+            if unsafe { sam_hdr_tid2len(self.0, tid) } > 1_i64 << 29 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn duplicate(&self) -> Result<Self> {
         let header = unsafe { sam_hdr_dup(self.0) };
         if header.is_null() {

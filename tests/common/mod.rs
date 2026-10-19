@@ -18,6 +18,21 @@ struct RawBam1 {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+struct RawIndex {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct RawIterator {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct RawBgzf {
+    _private: [u8; 0],
+}
+
 #[link(name = "hts")]
 // The test helper links htslib directly, so static htslib dependencies are not
 // inherited through the qbix crate's build script link directives.
@@ -33,6 +48,24 @@ extern "C" {
     fn sam_hdr_str(h: *mut RawSamHdr) -> *const c_char;
     fn sam_hdr_write(fp: *mut RawHtsFile, h: *const RawSamHdr) -> c_int;
     fn sam_hdr_destroy(h: *mut RawSamHdr);
+    #[allow(dead_code)]
+    fn sam_index_load(fp: *mut RawHtsFile, path: *const c_char) -> *mut RawIndex;
+    #[allow(dead_code)]
+    fn hts_idx_destroy(index: *mut RawIndex);
+    #[allow(dead_code)]
+    fn sam_itr_queryi(index: *const RawIndex, tid: c_int, begin: i64, end: i64)
+        -> *mut RawIterator;
+    #[allow(dead_code)]
+    fn hts_itr_next(
+        fp: *mut RawBgzf,
+        iter: *mut RawIterator,
+        record: *mut RawBam1,
+        data: *mut RawHtsFile,
+    ) -> c_int;
+    #[allow(dead_code)]
+    fn hts_itr_destroy(iter: *mut RawIterator);
+    #[allow(dead_code)]
+    fn hts_get_bgzfp(fp: *mut RawHtsFile) -> *mut RawBgzf;
     fn bam_init1() -> *mut RawBam1;
     fn bam_destroy1(b: *mut RawBam1);
     fn bam_set1(
@@ -103,6 +136,18 @@ pub fn write_unmapped_bam_with_header(path: &str, readnames: &[&str], header_tex
 }
 
 #[allow(dead_code)]
+pub fn write_coordinate_bam(path: &str, records: &[(&str, i64)]) {
+    let bam = HtsFile::open(path, "wb");
+    let header = Header::parse("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:1000\n");
+    assert_eq!(unsafe { sam_hdr_write(bam.0, header.0) }, 0);
+    let record = BamRecord::new();
+    for &(name, pos) in records {
+        record.set_mapped(name, pos);
+        assert!(unsafe { sam_write1(bam.0, header.0, record.0) } >= 0);
+    }
+}
+
+#[allow(dead_code)]
 pub fn read_bam_header(path: &str) -> String {
     let bam = HtsFile::open(path, "rb");
     let header = Header(unsafe { sam_hdr_read(bam.0) });
@@ -113,6 +158,46 @@ pub fn read_bam_header(path: &str) -> String {
         .to_str()
         .unwrap()
         .to_string()
+}
+
+#[allow(dead_code)]
+pub fn bam_index_loads(path: &str) -> bool {
+    let bam = HtsFile::open(path, "rb");
+    let path = CString::new(path).unwrap();
+    let index = unsafe { sam_index_load(bam.0, path.as_ptr()) };
+    if index.is_null() {
+        false
+    } else {
+        unsafe { hts_idx_destroy(index) };
+        true
+    }
+}
+
+#[allow(dead_code)]
+pub fn count_region(path: &str, begin: i64, end: i64) -> usize {
+    let bam = HtsFile::open(path, "rb");
+    let header = Header(unsafe { sam_hdr_read(bam.0) });
+    assert!(!header.0.is_null());
+    let path = CString::new(path).unwrap();
+    let index = unsafe { sam_index_load(bam.0, path.as_ptr()) };
+    assert!(!index.is_null());
+    let iter = unsafe { sam_itr_queryi(index, 0, begin, end) };
+    assert!(!iter.is_null());
+    let record = BamRecord::new();
+    let mut count = 0;
+    loop {
+        let result = unsafe { hts_itr_next(hts_get_bgzfp(bam.0), iter, record.0, bam.0) };
+        if result == -1 {
+            break;
+        }
+        assert!(result >= 0);
+        count += 1;
+    }
+    unsafe {
+        hts_itr_destroy(iter);
+        hts_idx_destroy(index);
+    }
+    count
 }
 
 struct HtsFile(*mut RawHtsFile);
@@ -184,6 +269,34 @@ impl BamRecord {
                 0,
                 std::ptr::null(),
                 std::ptr::null(),
+                0,
+            )
+        };
+        assert!(ret >= 0);
+    }
+
+    fn set_mapped(&self, readname: &str, pos: i64) {
+        let readname = CString::new(readname).unwrap();
+        let cigar = [16_u32]; // 1M
+        let seq = *b"A";
+        let qual = [30_u8];
+        let ret = unsafe {
+            bam_set1(
+                self.0,
+                readname.as_bytes().len(),
+                readname.as_ptr(),
+                0,
+                0,
+                pos,
+                60,
+                1,
+                cigar.as_ptr(),
+                -1,
+                -1,
+                0,
+                seq.len(),
+                seq.as_ptr().cast(),
+                qual.as_ptr().cast(),
                 0,
             )
         };

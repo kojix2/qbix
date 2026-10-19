@@ -65,7 +65,8 @@ jobs:
         run: |
           echo "CC=musl-gcc" >> "${GITHUB_ENV}"
           echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "${GITHUB_ENV}"
-          echo "RUSTFLAGS=-C target-feature=+crt-static" >> "${GITHUB_ENV}"
+          # Rust passes -nodefaultlibs, so add libgcc for htslib's GCC CPU dispatch.
+          echo "RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-lgcc" >> "${GITHUB_ENV}"
 
       - name: Build static musl zlib
         if: matrix.target == 'x86_64-unknown-linux-musl'

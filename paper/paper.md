@@ -58,7 +58,7 @@ Offsets associated with the same hash occupy a contiguous range in the offset ar
 
 `qbix` reads the BAM records at the resulting virtual offsets through htslib [@bonfield2021htslib]. It returns only records whose actual QNAME matches the query. The BAM record at each retrieved offset must be read before any result can be emitted. Exact verification adds only a QNAME comparison to this read. A hash collision causes extra BAM records to be read. It cannot add a record with the wrong QNAME to the result.
 
-Published datasets and a typical 30-fold WGS configuration put the number of distinct QNAMEs in a human WGS BAM at approximately 2--10 million for long reads and 300--400 million for Illumina reads [@shumate2020ashkenazi; @illuminaDnaPrep]. Assuming independent, uniformly distributed 64-bit hashes, the probability that at least one pair of distinct QNAMEs shares a hash is on the order of 10⁻⁷--10⁻⁶ in the former range and approximately 0.3--0.4% in the latter.
+Published datasets and a typical 30-fold WGS configuration put the number of distinct QNAMEs in a human WGS BAM at approximately 2--10 million for long reads and 300--400 million for Illumina reads [@shumate2020ashkenazi; @illuminaDnaPrep]. Assuming independent, uniformly distributed 64-bit hashes, the probability that at least one pair of distinct QNAMEs shares a hash is on the order of $10^{-7}$--$10^{-6}$ in the former range and approximately 0.3--0.4% in the latter.
 
 The QBI header records the size, modification time, and header hash of the source BAM. Before lookup, `qbix` compares these values with metadata from the supplied BAM.
 

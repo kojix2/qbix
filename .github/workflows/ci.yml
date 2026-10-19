@@ -45,7 +45,7 @@ jobs:
 
       - name: Cache static libdeflate
         id: cache-libdeflate
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/libdeflate
           key: ${{ runner.os }}-${{ runner.arch }}-libdeflate-${{ env.LIBDEFLATE_VERSION }}-pic
@@ -88,7 +88,7 @@ jobs:
 
       - name: Cache static htslib
         id: cache-htslib
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/htslib
           key: ${{ runner.os }}-${{ runner.arch }}-htslib-${{ env.HTSLIB_VERSION }}-libdeflate-${{ env.LIBDEFLATE_VERSION }}-fpic

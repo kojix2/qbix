@@ -183,6 +183,12 @@ qbix get reads.bam -f names.txt -b -o hits.bam
 qbix get reads.bam -f names.txt -Ob -o hits.bam
 ```
 
+When `-o` names a file, qbix writes to a temporary file beside it and replaces
+the destination only after successful output. A read or write error leaves an
+existing output file untouched. The same applies to `--missing` reports; when
+both paths are used, they are published separately. Standard output (`-o -`)
+remains streaming.
+
 When built with `--features biosyntax`, SAM output to a terminal is colored by
 default. Pipes and files are left plain. Use `--color always` or
 `--color never` to override:

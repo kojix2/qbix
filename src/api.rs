@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::atomic_output::AtomicOutput;
 use crate::commands;
 use crate::error::{Error, PublicResult as Result};
 use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
@@ -337,7 +338,15 @@ impl IndexedBam {
             ));
         }
         let output_path = path_to_str(output_path, "output path")?;
-        let out = HtsFile::open(output_path, "w")
+        let atomic_output = (output_path != "-")
+            .then(|| AtomicOutput::new(output_path).map_err(Error::from))
+            .transpose()?;
+        let write_path = atomic_output
+            .as_ref()
+            .map(|output| output.path().map_err(Error::from))
+            .transpose()?
+            .unwrap_or(output_path);
+        let out = HtsFile::open(write_path, "w")
             .map_err(|_| format!("[qbix] could not open SAM output: {output_path}"))?;
         let rec = BamRecord::new().map_err(Error::from)?;
         let mut hits = Vec::new();
@@ -365,6 +374,10 @@ impl IndexedBam {
                 out.write_record(&self.header, &rec).map_err(Error::from)?;
                 written += 1;
             }
+        }
+        out.close().map_err(Error::from)?;
+        if let Some(atomic_output) = atomic_output {
+            atomic_output.commit().map_err(Error::from)?;
         }
         Ok(written)
     }

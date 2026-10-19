@@ -1,3 +1,4 @@
+use crate::atomic_output::AtomicOutput;
 use crate::error::Result;
 use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
 use crate::index::{
@@ -193,9 +194,19 @@ where
         output_header.set_unknown_sort_order()?;
     }
     output_header.add_qbix_program(options.command_line)?;
-    let mut missing_out = options
-        .missing_path
-        .map(|path| {
+    let atomic_output = (output_path != "-")
+        .then(|| AtomicOutput::new(output_path))
+        .transpose()?;
+    let write_path = atomic_output
+        .as_ref()
+        .map(AtomicOutput::path)
+        .transpose()?
+        .unwrap_or(output_path);
+    let missing_atomic = options.missing_path.map(AtomicOutput::new).transpose()?;
+    let mut missing_out = missing_atomic
+        .as_ref()
+        .map(|output| {
+            let path = output.path()?;
             std::fs::File::create(path)
                 .map(BufWriter::new)
                 .map_err(|e| format!("[qbix] could not open missing QNAME output {path}: {e}"))
@@ -203,7 +214,7 @@ where
         .transpose()?;
     let rec = BamRecord::new()?;
     let mut out = RecordWriter::open(
-        output_path,
+        write_path,
         options.output_format,
         options.color_mode,
         options.with_header,
@@ -234,7 +245,16 @@ where
         }
     }
 
-    flush_missing_qnames(&mut missing_out)
+    out.finish()?;
+    flush_missing_qnames(&mut missing_out)?;
+    drop(missing_out);
+    if let Some(missing_atomic) = missing_atomic {
+        missing_atomic.commit()?;
+    }
+    if let Some(atomic_output) = atomic_output {
+        atomic_output.commit()?;
+    }
+    Ok(())
 }
 
 fn validate_get_paths(
@@ -471,6 +491,17 @@ impl RecordWriter {
             Self::Hts(out) => out.write_record(header, rec),
             #[cfg(feature = "biosyntax")]
             Self::Colored(out) => out.write_record(header, rec),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        match self {
+            Self::Hts(out) => out.close(),
+            #[cfg(feature = "biosyntax")]
+            Self::Colored(mut out) => out
+                .writer
+                .flush()
+                .map_err(|error| format!("[qbix] could not flush colored SAM output: {error}")),
         }
     }
 }

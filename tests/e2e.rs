@@ -369,6 +369,7 @@ fn get_can_report_missing_query_names() {
     assert!(unique.stdout.is_empty());
     assert_eq!(fs::read_to_string(unique_missing).unwrap(), "not_present\n");
 
+    fs::write(no_missing, "old report").unwrap();
     let all_found = Command::new(qbix())
         .args(["get", "--missing", no_missing, bam, "read_b"])
         .output()
@@ -566,15 +567,13 @@ fn get_adds_hd_when_input_has_none() {
 fn query_order_processes_stdin_before_a_later_read_error() {
     let temp = TempDir::new("streaming-stdin");
     let bam = temp.path().join("reads.bam");
-    let output = temp.path().join("hits.sam");
     let bam = bam.to_str().unwrap();
-    let output = output.to_str().unwrap();
     write_unmapped_bam(bam, &["read_a", "read_b"]);
 
     assert_success(Command::new(qbix()).args(["index", bam]));
 
     let mut child = Command::new(qbix())
-        .args(["get", "--query-order", "-f", "-", "-o", output, bam])
+        .args(["get", "--query-order", "-f", "-", bam])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -590,11 +589,69 @@ fn query_order_processes_stdin_before_a_later_read_error() {
 
     assert!(!get.status.success());
     assert!(String::from_utf8_lossy(&get.stderr).contains("could not read read names"));
-    assert_eq!(
-        first_fields(&fs::read(output).unwrap()),
-        ["read_a"],
-        "the first query must be processed before the later stdin error"
-    );
+    assert_eq!(first_fields(&get.stdout), ["read_a"]);
+}
+
+#[test]
+fn get_failure_preserves_existing_output_and_removes_temporary_file() {
+    let temp = TempDir::new("atomic-output-failure");
+    let bam = temp.path().join("reads.bam");
+    let names = temp.path().join("names.txt");
+    let bam = bam.to_str().unwrap();
+    let names = names.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+    fs::write(names, b"read_a\nnot_present\n\xff\n").unwrap();
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    for (format, filename) in [("SAM", "hits.sam"), ("BAM", "hits.bam")] {
+        let output = temp.path().join(filename);
+        let missing = temp.path().join(format!("{filename}.missing"));
+        fs::write(&output, b"original output").unwrap();
+        fs::write(&missing, b"original missing report").unwrap();
+        let get = Command::new(qbix())
+            .args([
+                "get",
+                bam,
+                "-f",
+                names,
+                "-O",
+                format,
+                "-o",
+                output.to_str().unwrap(),
+                "--missing",
+                missing.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!get.status.success());
+        assert!(String::from_utf8_lossy(&get.stderr).contains("could not read read names"));
+        assert_eq!(fs::read(&output).unwrap(), b"original output");
+        assert_eq!(fs::read(&missing).unwrap(), b"original missing report");
+        let temp_prefix = format!("{filename}.qbix-tmp-");
+        let missing_temp_prefix = format!("{filename}.missing.qbix-tmp-");
+        assert!(!fs::read_dir(temp.path()).unwrap().any(|entry| {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&temp_prefix) || name.starts_with(&missing_temp_prefix)
+        }));
+
+        let absent = temp.path().join(format!("new-{filename}"));
+        let get = Command::new(qbix())
+            .args([
+                "get",
+                bam,
+                "-f",
+                names,
+                "-O",
+                format,
+                "-o",
+                absent.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!get.status.success());
+        assert!(!absent.exists());
+    }
 }
 
 #[test]
@@ -658,6 +715,12 @@ fn get_can_write_bam_output_to_path() {
     let hits = hits.to_str().unwrap();
     write_unmapped_bam(bam, &["read_a", "read_b", "read_c"]);
     fs::write(names, "read_c\nread_a\n").unwrap();
+    fs::write(hits, b"old output").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hits, fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     assert_success(Command::new(qbix()).args(["index", bam]));
 
@@ -671,6 +734,14 @@ fn get_can_write_bam_output_to_path() {
         String::from_utf8_lossy(&get.stderr)
     );
     assert!(get.stdout.is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(hits).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     assert_success(Command::new(qbix()).args(["index", hits]));
     let verify = Command::new(qbix())
@@ -683,6 +754,33 @@ fn get_can_write_bam_output_to_path() {
         String::from_utf8_lossy(&verify.stderr)
     );
     assert_eq!(first_fields(&verify.stdout), ["read_a", "read_c"]);
+}
+
+#[test]
+#[cfg(unix)]
+fn get_replaces_symlink_target_without_removing_link() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("output-symlink");
+    let bam = temp.path().join("reads.bam");
+    let output = temp.path().join("hits.sam");
+    let link = temp.path().join("link.sam");
+    write_unmapped_bam(bam.to_str().unwrap(), &["read_a"]);
+    fs::write(&output, "old output").unwrap();
+    symlink(&output, &link).unwrap();
+    assert_success(Command::new(qbix()).args(["index", bam.to_str().unwrap()]));
+    assert_success(Command::new(qbix()).args([
+        "get",
+        bam.to_str().unwrap(),
+        "read_a",
+        "-o",
+        link.to_str().unwrap(),
+    ]));
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(first_fields(&fs::read(&output).unwrap()), ["read_a"]);
 }
 
 #[test]

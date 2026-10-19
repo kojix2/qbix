@@ -78,6 +78,8 @@ fn public_api_writes_sam_records_to_a_path() {
     assert_eq!(std::fs::read(&bam).unwrap(), bam_before);
     assert_eq!(std::fs::read(&index_path).unwrap(), index_before);
 
+    std::fs::write(&query_sam, "old output").unwrap();
+
     let query_written = indexed
         .write_sam_records_to_path(&query_sam, &["read_a", "read_b"], qbix::OutputOrder::Query)
         .unwrap();

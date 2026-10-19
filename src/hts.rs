@@ -60,6 +60,14 @@ pub(crate) struct Header(*mut RawSamHdr);
 pub(crate) struct BamRecord(*mut RawBam1);
 
 impl HtsFile {
+    pub(crate) fn close(mut self) -> Result<()> {
+        let file = std::mem::replace(&mut self.0, std::ptr::null_mut());
+        if unsafe { hts_close(file) } < 0 {
+            return Err("[qbix] could not close alignment output".to_string());
+        }
+        Ok(())
+    }
+
     pub(crate) fn open(path: &str, mode: &str) -> std::result::Result<Self, ()> {
         let path = CString::new(path).map_err(|_| ())?;
         let mode = CString::new(mode).map_err(|_| ())?;

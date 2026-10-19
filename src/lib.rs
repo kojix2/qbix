@@ -1,4 +1,5 @@
 mod api;
+mod atomic_output;
 #[cfg(feature = "biosyntax")]
 mod biosyntax;
 pub mod c_api;

@@ -112,6 +112,10 @@ pub(crate) fn build_index(input_bam: &str, options: BuildIndexOptions<'_>) -> Re
             "[qbix] output index must not overwrite the input BAM: {out_fn}"
         ));
     }
+    let resolved_out_fn = AtomicOutput::resolve_destination(&out_fn)?;
+    let resolved_out_fn = resolved_out_fn
+        .to_str()
+        .ok_or_else(|| "[qbix] output index target is not valid UTF-8".to_string())?;
     let bam =
         HtsFile::open(input_bam, "r").map_err(|_| format!("[qbix] could not open {input_bam}"))?;
     bam.set_threads(options.threads)?;
@@ -121,7 +125,7 @@ pub(crate) fn build_index(input_bam: &str, options: BuildIndexOptions<'_>) -> Re
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let rec = BamRecord::new()?;
     let mut builder = BucketIndexBuilder::new_with_format_and_radix(
-        &out_fn,
+        resolved_out_fn,
         options.memory_limit,
         options.bucket_bits,
         options.sort_threads,
@@ -184,8 +188,17 @@ where
         options.missing_path,
         options.readnames_path,
     )?;
-    let bam_sidecars = (options.output_format == OutputFormat::Bam && output_path != "-")
-        .then(|| [format!("{output_path}.bai"), format!("{output_path}.csi")]);
+    let atomic_output = (output_path != "-")
+        .then(|| AtomicOutput::new(output_path))
+        .transpose()?;
+    let bam_sidecars = if options.output_format == OutputFormat::Bam {
+        atomic_output
+            .as_ref()
+            .map(|output| bam_sidecar_paths(output_path, output.destination()))
+            .transpose()?
+    } else {
+        None
+    };
     if let Some(sidecars) = &bam_sidecars {
         validate_bam_sidecar_paths(
             sidecars,
@@ -221,10 +234,7 @@ where
         None
     };
     let index_atomic = index_extension
-        .map(|extension| AtomicOutput::new(&format!("{output_path}.{extension}")))
-        .transpose()?;
-    let atomic_output = (output_path != "-")
-        .then(|| AtomicOutput::new(output_path))
+        .map(|extension| AtomicOutput::new_no_follow(&format!("{output_path}.{extension}")))
         .transpose()?;
     let write_path = atomic_output
         .as_ref()
@@ -287,7 +297,7 @@ where
     }
     let mut old_indexes = bam_sidecars
         .as_ref()
-        .map(OldIndexBackups::stage)
+        .map(|paths| OldIndexBackups::stage(paths))
         .transpose()?;
     if let Some(atomic_output) = atomic_output {
         if let Err(error) = atomic_output.commit() {
@@ -312,20 +322,24 @@ where
 /// Move old coordinate indexes out of the paths readers discover before
 /// publishing a replacement BAM. If publication fails, restore the old pair.
 struct OldIndexBackups {
-    directory: Option<PathBuf>,
+    directories: Vec<PathBuf>,
     moved: Vec<(PathBuf, PathBuf)>,
     restore_on_drop: bool,
 }
 
 impl OldIndexBackups {
-    fn stage(sidecars: &[String; 2]) -> Result<Self> {
+    fn stage(sidecars: &[String]) -> Result<Self> {
         let mut old = Vec::new();
         for sidecar in sidecars {
             match std::fs::symlink_metadata(sidecar) {
-                Ok(metadata) if metadata.file_type().is_file() => old.push(PathBuf::from(sidecar)),
+                Ok(metadata)
+                    if metadata.file_type().is_file() || metadata.file_type().is_symlink() =>
+                {
+                    old.push(PathBuf::from(sidecar));
+                }
                 Ok(_) => {
                     return Err(format!(
-                        "[qbix] output index is not a regular file: {sidecar}"
+                        "[qbix] output index is not a regular file or symlink: {sidecar}"
                     ))
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -336,49 +350,25 @@ impl OldIndexBackups {
                 }
             }
         }
-        if old.is_empty() {
-            return Ok(Self {
-                directory: None,
-                moved: Vec::new(),
-                restore_on_drop: true,
-            });
-        }
-
-        let first = &old[0];
-        let parent = first.parent().unwrap_or_else(|| Path::new("."));
-        let name = first
-            .file_name()
-            .ok_or_else(|| format!("[qbix] invalid output index path: {}", first.display()))?;
-        let mut directory = None;
-        for _ in 0..1000 {
-            let mut backup_name = name.to_os_string();
-            backup_name.push(format!(
-                ".qbix-backup-{}-{}",
-                std::process::id(),
-                NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
-            ));
-            let candidate = parent.join(backup_name);
-            match std::fs::create_dir(&candidate) {
-                Ok(()) => {
-                    directory = Some(candidate);
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(format!(
-                        "[qbix] could not reserve backup for output indexes: {error}"
-                    ));
-                }
-            }
-        }
-        let directory = directory
-            .ok_or_else(|| "[qbix] could not reserve backup for output indexes".to_string())?;
         let mut backups = Self {
-            directory: Some(directory.clone()),
+            directories: Vec::new(),
             moved: Vec::new(),
             restore_on_drop: true,
         };
         for original in old {
+            let parent = original.parent().unwrap_or_else(|| Path::new("."));
+            let directory = match backups
+                .directories
+                .iter()
+                .find(|directory| directory.parent() == Some(parent))
+            {
+                Some(directory) => directory.clone(),
+                None => {
+                    let directory = reserve_index_backup_directory(&original)?;
+                    backups.directories.push(directory.clone());
+                    directory
+                }
+            };
             let backup = directory.join(original.file_name().unwrap());
             std::fs::rename(&original, &backup).map_err(|error| {
                 format!(
@@ -401,7 +391,7 @@ impl OldIndexBackups {
                 ));
             }
         }
-        self.remove_directory()?;
+        self.remove_directories()?;
         self.restore_on_drop = false;
         Ok(())
     }
@@ -419,20 +409,47 @@ impl OldIndexBackups {
                 )
             })?;
         }
-        self.remove_directory()
+        self.remove_directories()
     }
 
-    fn remove_directory(&mut self) -> Result<()> {
-        if let Some(directory) = self.directory.take() {
-            std::fs::remove_dir(&directory).map_err(|error| {
-                format!(
+    fn remove_directories(&mut self) -> Result<()> {
+        while let Some(directory) = self.directories.pop() {
+            if let Err(error) = std::fs::remove_dir(&directory) {
+                self.directories.push(directory.clone());
+                return Err(format!(
                     "[qbix] could not remove index backup directory {}: {error}",
                     directory.display()
-                )
-            })?;
+                ));
+            }
         }
         Ok(())
     }
+}
+
+fn reserve_index_backup_directory(original: &Path) -> Result<PathBuf> {
+    let parent = original.parent().unwrap_or_else(|| Path::new("."));
+    let name = original
+        .file_name()
+        .ok_or_else(|| format!("[qbix] invalid output index path: {}", original.display()))?;
+    for _ in 0..1000 {
+        let mut backup_name = name.to_os_string();
+        backup_name.push(format!(
+            ".qbix-backup-{}-{}",
+            std::process::id(),
+            NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let candidate = parent.join(backup_name);
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not reserve backup for output indexes: {error}"
+                ));
+            }
+        }
+    }
+    Err("[qbix] could not reserve backup for output indexes".to_string())
 }
 
 impl Drop for OldIndexBackups {
@@ -444,7 +461,7 @@ impl Drop for OldIndexBackups {
 }
 
 fn validate_bam_sidecar_paths(
-    sidecars: &[String; 2],
+    sidecars: &[String],
     input_bam: &str,
     input_index: &str,
     output_path: &str,
@@ -453,9 +470,11 @@ fn validate_bam_sidecar_paths(
 ) -> Result<()> {
     for sidecar in sidecars {
         match std::fs::symlink_metadata(sidecar) {
-            Ok(metadata) if !metadata.file_type().is_file() => {
+            Ok(metadata)
+                if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
                 return Err(format!(
-                    "[qbix] output index is not a regular file: {sidecar}"
+                    "[qbix] output index is not a regular file or symlink: {sidecar}"
                 ));
             }
             Ok(_) => {}
@@ -483,6 +502,78 @@ fn validate_bam_sidecar_paths(
         }
     }
     Ok(())
+}
+
+fn bam_sidecar_paths(requested: &str, destination: &Path) -> Result<Vec<String>> {
+    let mut bam_paths = Vec::new();
+    let mut current = PathBuf::from(requested);
+    let mut resolved_chain = false;
+    for _ in 0..64 {
+        bam_paths.push(current.clone());
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                resolved_chain = true;
+                break;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not inspect output BAM symlink {}: {error}",
+                    current.display()
+                ));
+            }
+        };
+        if !metadata.file_type().is_symlink() {
+            resolved_chain = true;
+            break;
+        }
+        let target = std::fs::read_link(&current).map_err(|error| {
+            format!(
+                "[qbix] could not read output BAM symlink {}: {error}",
+                current.display()
+            )
+        })?;
+        current = if target.is_absolute() {
+            target
+        } else {
+            current
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(target)
+        };
+    }
+    if !resolved_chain {
+        return Err("[qbix] output BAM has too many symlink hops".to_string());
+    }
+    bam_paths.push(destination.to_path_buf());
+
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for bam_path in bam_paths {
+        let parent = bam_path.parent().unwrap_or_else(|| Path::new("."));
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+            format!(
+                "[qbix] could not resolve output BAM directory {}: {error}",
+                parent.display()
+            )
+        })?;
+        let file_name = bam_path
+            .file_name()
+            .ok_or_else(|| "[qbix] invalid output BAM path".to_string())?;
+        if seen.insert(canonical_parent.join(file_name)) {
+            let bam_path = bam_path
+                .to_str()
+                .ok_or_else(|| "[qbix] output BAM path is not valid UTF-8".to_string())?;
+            paths.push(format!("{bam_path}.bai"));
+            paths.push(format!("{bam_path}.csi"));
+        }
+    }
+    Ok(paths)
 }
 
 fn validate_get_paths(
@@ -1185,6 +1276,41 @@ mod tests {
         }
         assert_eq!(fs::read(&bai).unwrap(), b"old BAI");
         assert_eq!(fs::read(&csi).unwrap(), b"old CSI");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn old_index_symlinks_are_restored_across_directories() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir().join(format!(
+            "qbix-restore-index-links-test-{}-{}",
+            std::process::id(),
+            NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let source_dir = directory.join("source");
+        let result_dir = directory.join("results");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir(&result_dir).unwrap();
+        let target_bai = source_dir.join("target.bam.bai");
+        let link_bai = result_dir.join("link.bam.bai");
+        fs::write(&target_bai, b"old BAI").unwrap();
+        symlink(&target_bai, &link_bai).unwrap();
+        let sidecars = [
+            link_bai.to_str().unwrap().to_string(),
+            target_bai.to_str().unwrap().to_string(),
+        ];
+        {
+            let _backups = OldIndexBackups::stage(&sidecars).unwrap();
+            assert!(fs::symlink_metadata(&link_bai).is_err());
+            assert!(!target_bai.exists());
+        }
+        assert!(fs::symlink_metadata(&link_bai)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target_bai).unwrap(), b"old BAI");
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -72,6 +72,35 @@ fn bucket_builder_writes_same_bytes_as_in_memory_save() {
 }
 
 #[test]
+#[cfg(unix)]
+fn bucket_builder_does_not_follow_an_existing_temporary_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let path = temp_index_path("temporary-symlink");
+    let victim = temp_index_path("temporary-symlink-victim");
+    let legacy_temp = path.with_file_name(format!(
+        "{}.tmp.{}",
+        path.file_name().unwrap().to_string_lossy(),
+        process::id()
+    ));
+    std::fs::write(&victim, b"keep me").unwrap();
+    symlink(&victim, &legacy_temp).unwrap();
+
+    let mut builder = BucketIndexBuilder::new(path.to_str().unwrap(), 16, 1, 1, None).unwrap();
+    builder.add("read_a", 10).unwrap();
+    builder.finish(test_bam_metadata()).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    assert!(std::fs::symlink_metadata(&legacy_temp)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(legacy_temp).unwrap();
+    std::fs::remove_file(victim).unwrap();
+}
+
+#[test]
 fn bucket_builder_parallel_sort_writes_same_bytes_as_in_memory_save() {
     let records = [
         ("read_b", 30),

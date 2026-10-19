@@ -14,7 +14,7 @@ pub(crate) struct AtomicOutput {
 }
 
 impl AtomicOutput {
-    pub(crate) fn new(destination: &str) -> Result<Self> {
+    pub(crate) fn resolve_destination(destination: &str) -> Result<PathBuf> {
         let requested = Path::new(destination);
         let resolved = match fs::symlink_metadata(requested) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -47,6 +47,40 @@ impl AtomicOutput {
                 ));
             }
         }
+        Ok(destination.to_path_buf())
+    }
+
+    pub(crate) fn new(destination: &str) -> Result<Self> {
+        Self::new_at(Self::resolve_destination(destination)?)
+    }
+
+    /// Replace the path itself rather than following a pre-existing symlink.
+    /// Coordinate indexes use this so an implicit sidecar cannot overwrite an
+    /// arbitrary symlink target.
+    pub(crate) fn new_no_follow(destination: &str) -> Result<Self> {
+        let destination = Path::new(destination);
+        match fs::symlink_metadata(destination) {
+            Ok(metadata)
+                if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                return Err(format!(
+                    "[qbix] output is not a regular file or symlink: {}",
+                    destination.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not inspect output {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+        Self::new_at(destination.to_path_buf())
+    }
+
+    fn new_at(destination: PathBuf) -> Result<Self> {
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         let name = destination
             .file_name()
@@ -72,8 +106,8 @@ impl AtomicOutput {
                         temporary,
                         committed: false,
                     };
-                    match fs::metadata(destination) {
-                        Ok(metadata) if metadata.is_file() => {
+                    match fs::symlink_metadata(&destination) {
+                        Ok(metadata) if metadata.file_type().is_file() => {
                             fs::set_permissions(&output.temporary, metadata.permissions())
                                 .map_err(|error| {
                                     format!(
@@ -112,6 +146,10 @@ impl AtomicOutput {
         self.temporary
             .to_str()
             .ok_or_else(|| "[qbix] temporary output path is not valid UTF-8".to_string())
+    }
+
+    pub(crate) fn destination(&self) -> &Path {
+        &self.destination
     }
 
     pub(crate) fn commit(mut self) -> Result<()> {

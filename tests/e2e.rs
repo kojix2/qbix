@@ -943,6 +943,221 @@ fn get_replaces_symlink_target_without_removing_link() {
 }
 
 #[test]
+#[cfg(unix)]
+fn bam_output_through_symlink_retires_indexes_at_link_and_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("indexed-bam-output-symlink");
+    let source_dir = temp.path().join("source");
+    let result_dir = temp.path().join("results");
+    fs::create_dir(&source_dir).unwrap();
+    fs::create_dir(&result_dir).unwrap();
+    let input = temp.path().join("input.bam");
+    let target = source_dir.join("target.bam");
+    let link = result_dir.join("link.bam");
+    write_coordinate_bam(input.to_str().unwrap(), &[("read_a", 10)]);
+    write_coordinate_bam(target.to_str().unwrap(), &[("old", 20)]);
+    fs::write(format!("{}.bai", target.display()), b"old target BAI").unwrap();
+    fs::write(format!("{}.csi", target.display()), b"old target CSI").unwrap();
+    symlink("../source/target.bam", &link).unwrap();
+    symlink(
+        format!("{}.bai", target.display()),
+        format!("{}.bai", link.display()),
+    )
+    .unwrap();
+    symlink(
+        source_dir.join("missing.csi"),
+        format!("{}.csi", link.display()),
+    )
+    .unwrap();
+    assert_success(Command::new(qbix()).args(["index", input.to_str().unwrap()]));
+
+    assert_success(Command::new(qbix()).args([
+        "get",
+        input.to_str().unwrap(),
+        "read_a",
+        "-Ob",
+        "-o",
+        link.to_str().unwrap(),
+    ]));
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(bam_index_loads(link.to_str().unwrap()));
+    assert_eq!(count_region(link.to_str().unwrap(), 10, 11), 1);
+    assert!(!std::path::Path::new(&format!("{}.bai", target.display())).exists());
+    assert!(!std::path::Path::new(&format!("{}.csi", target.display())).exists());
+    assert!(fs::symlink_metadata(format!("{}.csi", link.display())).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn no_index_through_bam_symlink_removes_indexes_at_link_and_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("no-index-bam-output-symlink");
+    let source_dir = temp.path().join("source");
+    let result_dir = temp.path().join("results");
+    fs::create_dir(&source_dir).unwrap();
+    fs::create_dir(&result_dir).unwrap();
+    let input = temp.path().join("input.bam");
+    let target = source_dir.join("target.bam");
+    let link = result_dir.join("link.bam");
+    write_coordinate_bam(input.to_str().unwrap(), &[("read_a", 10)]);
+    write_coordinate_bam(target.to_str().unwrap(), &[("old", 20)]);
+    fs::write(format!("{}.bai", target.display()), b"old target BAI").unwrap();
+    symlink(&target, &link).unwrap();
+    fs::write(format!("{}.bai", link.display()), b"old link BAI").unwrap();
+    assert_success(Command::new(qbix()).args(["index", input.to_str().unwrap()]));
+
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--no-index",
+        input.to_str().unwrap(),
+        "read_a",
+        "-Ob",
+        "-o",
+        link.to_str().unwrap(),
+    ]));
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(!std::path::Path::new(&format!("{}.bai", target.display())).exists());
+    assert!(!std::path::Path::new(&format!("{}.bai", link.display())).exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn bam_output_retires_indexes_along_symlink_chain() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("bam-output-symlink-chain");
+    let input = temp.path().join("input.bam");
+    let target = temp.path().join("target.bam");
+    let middle = temp.path().join("middle.bam");
+    let link = temp.path().join("link.bam");
+    write_coordinate_bam(input.to_str().unwrap(), &[("read_a", 10)]);
+    write_coordinate_bam(target.to_str().unwrap(), &[("old", 20)]);
+    symlink("target.bam", &middle).unwrap();
+    symlink("middle.bam", &link).unwrap();
+    for path in [&link, &middle, &target] {
+        fs::write(format!("{}.bai", path.display()), b"old BAI").unwrap();
+    }
+    assert_success(Command::new(qbix()).args(["index", input.to_str().unwrap()]));
+    assert_success(Command::new(qbix()).args([
+        "get",
+        input.to_str().unwrap(),
+        "read_a",
+        "-Ob",
+        "-o",
+        link.to_str().unwrap(),
+    ]));
+    assert!(bam_index_loads(link.to_str().unwrap()));
+    assert!(!std::path::Path::new(&format!("{}.bai", middle.display())).exists());
+    assert!(!std::path::Path::new(&format!("{}.bai", target.display())).exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn building_qbi_through_symlink_preserves_link_and_updates_target() {
+    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new("qbi-output-symlink");
+    let input = temp.path().join("input.bam");
+    let index_target = temp.path().join("target.qbi");
+    let index_link = temp.path().join("link.qbi");
+    write_unmapped_bam(input.to_str().unwrap(), &["read_a"]);
+    fs::write(&index_target, b"old QBI").unwrap();
+    fs::set_permissions(&index_target, fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&index_target, &index_link).unwrap();
+
+    assert_success(Command::new(qbix()).args([
+        "index",
+        "-i",
+        index_link.to_str().unwrap(),
+        input.to_str().unwrap(),
+    ]));
+    assert!(fs::symlink_metadata(&index_link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_ne!(fs::read(&index_target).unwrap(), b"old QBI");
+    assert_eq!(
+        fs::metadata(&index_target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let get = Command::new(qbix())
+        .args([
+            "get",
+            "-i",
+            index_link.to_str().unwrap(),
+            input.to_str().unwrap(),
+            "read_a",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(first_fields(&get.stdout), ["read_a"]);
+
+    let dangling_target = temp.path().join("missing.qbi");
+    let dangling_link = temp.path().join("dangling.qbi");
+    symlink(&dangling_target, &dangling_link).unwrap();
+    let build = Command::new(qbix())
+        .args([
+            "index",
+            "-i",
+            dangling_link.to_str().unwrap(),
+            input.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!build.status.success());
+    assert!(fs::symlink_metadata(&dangling_link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(!dangling_target.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn get_rejects_output_symlink_to_input_bam() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("output-link-to-input");
+    let input = temp.path().join("input.bam");
+    let output_link = temp.path().join("output.bam");
+    write_coordinate_bam(input.to_str().unwrap(), &[("read_a", 10)]);
+    assert_success(Command::new(qbix()).args(["index", input.to_str().unwrap()]));
+    symlink(&input, &output_link).unwrap();
+    let before = fs::read(&input).unwrap();
+    let get = Command::new(qbix())
+        .args([
+            "get",
+            input.to_str().unwrap(),
+            "read_a",
+            "-Ob",
+            "-o",
+            output_link.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert_eq!(fs::read(&input).unwrap(), before);
+    assert!(fs::symlink_metadata(&output_link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
 fn get_rejects_output_paths_that_would_overwrite_inputs() {
     let temp = TempDir::new("output-path-conflicts");
     let bam = temp.path().join("reads.bam");

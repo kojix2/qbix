@@ -590,6 +590,7 @@ pub(crate) struct BucketIndexBuilder {
     total_records: usize,
     output_path: PathBuf,
     final_tmp_path: PathBuf,
+    final_tmp_file: File,
     guard: TempGuard,
     format: IndexFormat,
     qbi2_radix_bits: Option<u8>,
@@ -668,10 +669,10 @@ impl BucketIndexBuilder {
             )
         })?;
         let bucket_dir = create_unique_work_dir(&bucket_parent_dir)?;
-        let final_tmp_path = final_tmp_path(&output_path);
         let mut guard = TempGuard::new();
-        guard.track_file(final_tmp_path.clone());
         guard.track_dir(bucket_dir.clone());
+        let (final_tmp_path, final_tmp_file) = reserve_final_tmp_file(&output_path)?;
+        guard.track_file(final_tmp_path.clone());
 
         let bucket_count = 1usize << bucket_bits;
         let mut buckets = Vec::with_capacity(bucket_count);
@@ -693,6 +694,7 @@ impl BucketIndexBuilder {
             total_records: 0,
             output_path,
             final_tmp_path,
+            final_tmp_file,
             guard,
             format,
             qbi2_radix_bits,
@@ -746,12 +748,7 @@ impl BucketIndexBuilder {
                 .map_err(|e| format!("[qbix] could not flush bucket temp file: {e}"))?;
         }
 
-        let mut file = File::create(&self.final_tmp_path).map_err(|e| {
-            format!(
-                "[qbix] could not open temporary index for writing '{}': {e}",
-                self.final_tmp_path.display()
-            )
-        })?;
+        let mut file = self.final_tmp_file;
         let qbi2_radix_bits = resolve_qbi2_radix_bits(self.qbi2_radix_bits, self.total_records);
         let mut sink = SortedRecordSink::new(
             self.format,
@@ -995,16 +992,63 @@ fn validate_bucket_bits(bucket_bits: u8) -> Result<()> {
     Ok(())
 }
 
-fn final_tmp_path(output_path: &Path) -> PathBuf {
-    let pid = std::process::id();
-    let filename = output_path
-        .file_name()
-        .map(|name| format!("{}.tmp.{pid}", name.to_string_lossy()))
-        .unwrap_or_else(|| format!("qbix-index.tmp.{pid}"));
-    output_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(filename)
+fn reserve_final_tmp_file(output_path: &Path) -> Result<(PathBuf, File)> {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let name = output_path.file_name().ok_or_else(|| {
+        format!(
+            "[qbix] invalid output index path: {}",
+            output_path.display()
+        )
+    })?;
+    for attempt in 0..1000 {
+        let mut filename = name.to_os_string();
+        filename.push(format!(
+            ".qbix-tmp-{}-{attempt}-{}",
+            std::process::id(),
+            temp_unique_suffix()
+        ));
+        let path = parent.join(filename);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                let permissions = match std::fs::metadata(output_path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        std::fs::set_permissions(&path, metadata.permissions()).map_err(|error| {
+                            format!(
+                                "[qbix] could not preserve index permissions for '{}': {error}",
+                                output_path.display()
+                            )
+                        })
+                    }
+                    Ok(_) => Err(format!(
+                        "[qbix] output index is not a regular file: {}",
+                        output_path.display()
+                    )),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(format!(
+                        "[qbix] could not inspect output index '{}': {error}",
+                        output_path.display()
+                    )),
+                };
+                if let Err(error) = permissions {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(error);
+                }
+                return Ok((path, file));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "[qbix] could not create temporary index '{}': {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "[qbix] could not reserve a temporary index in '{}'",
+        parent.display()
+    ))
 }
 
 fn create_unique_work_dir(parent: &Path) -> Result<PathBuf> {

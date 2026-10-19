@@ -9,6 +9,9 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_INDEX_BACKUP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GetOrder {
@@ -282,34 +285,162 @@ where
     if let Some(missing_atomic) = missing_atomic {
         missing_atomic.commit()?;
     }
+    let mut old_indexes = bam_sidecars
+        .as_ref()
+        .map(OldIndexBackups::stage)
+        .transpose()?;
     if let Some(atomic_output) = atomic_output {
-        atomic_output.commit()?;
+        if let Err(error) = atomic_output.commit() {
+            return match old_indexes.as_mut().map(OldIndexBackups::restore) {
+                Some(Err(restore_error)) => Err(format!("{error}; {restore_error}")),
+                _ => Err(error),
+            };
+        }
     }
-    if let Some(sidecars) = bam_sidecars {
-        for (sidecar, extension) in sidecars.iter().zip(["bai", "csi"]) {
-            if index_extension == Some(extension) {
-                continue;
-            }
-            match std::fs::remove_file(sidecar) {
-                Ok(()) => {}
+    if let Some(old_indexes) = &mut old_indexes {
+        old_indexes.bam_published();
+    }
+    let index_result = index_atomic.map(AtomicOutput::commit).unwrap_or(Ok(()));
+    let cleanup_result = old_indexes.map(OldIndexBackups::discard).unwrap_or(Ok(()));
+    match (index_result, cleanup_result) {
+        (Err(index_error), Err(cleanup_error)) => Err(format!("{index_error}; {cleanup_error}")),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+/// Move old coordinate indexes out of the paths readers discover before
+/// publishing a replacement BAM. If publication fails, restore the old pair.
+struct OldIndexBackups {
+    directory: Option<PathBuf>,
+    moved: Vec<(PathBuf, PathBuf)>,
+    restore_on_drop: bool,
+}
+
+impl OldIndexBackups {
+    fn stage(sidecars: &[String; 2]) -> Result<Self> {
+        let mut old = Vec::new();
+        for sidecar in sidecars {
+            match std::fs::symlink_metadata(sidecar) {
+                Ok(metadata) if metadata.file_type().is_file() => old.push(PathBuf::from(sidecar)),
+                Ok(_) => {
+                    return Err(format!(
+                        "[qbix] output index is not a regular file: {sidecar}"
+                    ))
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(format!(
-                        "[qbix] could not remove stale index {sidecar}: {error}"
+                        "[qbix] could not inspect output index {sidecar}: {error}"
                     ));
                 }
             }
         }
-    }
-    if let Some(index_atomic) = index_atomic {
-        if let Err(error) = index_atomic.commit() {
-            if let Some(extension) = index_extension {
-                let _ = std::fs::remove_file(format!("{output_path}.{extension}"));
+        if old.is_empty() {
+            return Ok(Self {
+                directory: None,
+                moved: Vec::new(),
+                restore_on_drop: true,
+            });
+        }
+
+        let first = &old[0];
+        let parent = first.parent().unwrap_or_else(|| Path::new("."));
+        let name = first
+            .file_name()
+            .ok_or_else(|| format!("[qbix] invalid output index path: {}", first.display()))?;
+        let mut directory = None;
+        for _ in 0..1000 {
+            let mut backup_name = name.to_os_string();
+            backup_name.push(format!(
+                ".qbix-backup-{}-{}",
+                std::process::id(),
+                NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            let candidate = parent.join(backup_name);
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    directory = Some(candidate);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "[qbix] could not reserve backup for output indexes: {error}"
+                    ));
+                }
             }
-            return Err(error);
+        }
+        let directory = directory
+            .ok_or_else(|| "[qbix] could not reserve backup for output indexes".to_string())?;
+        let mut backups = Self {
+            directory: Some(directory.clone()),
+            moved: Vec::new(),
+            restore_on_drop: true,
+        };
+        for original in old {
+            let backup = directory.join(original.file_name().unwrap());
+            std::fs::rename(&original, &backup).map_err(|error| {
+                format!(
+                    "[qbix] could not back up output index {}: {error}",
+                    original.display()
+                )
+            })?;
+            backups.moved.push((original, backup));
+        }
+        Ok(backups)
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        while let Some((original, backup)) = self.moved.pop() {
+            if let Err(error) = std::fs::rename(&backup, &original) {
+                self.moved.push((original.clone(), backup));
+                return Err(format!(
+                    "[qbix] could not restore output index {}: {error}",
+                    original.display()
+                ));
+            }
+        }
+        self.remove_directory()?;
+        self.restore_on_drop = false;
+        Ok(())
+    }
+
+    fn bam_published(&mut self) {
+        self.restore_on_drop = false;
+    }
+
+    fn discard(mut self) -> Result<()> {
+        for (_, backup) in self.moved.drain(..) {
+            std::fs::remove_file(&backup).map_err(|error| {
+                format!(
+                    "[qbix] could not remove old output index {}: {error}",
+                    backup.display()
+                )
+            })?;
+        }
+        self.remove_directory()
+    }
+
+    fn remove_directory(&mut self) -> Result<()> {
+        if let Some(directory) = self.directory.take() {
+            std::fs::remove_dir(&directory).map_err(|error| {
+                format!(
+                    "[qbix] could not remove index backup directory {}: {error}",
+                    directory.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OldIndexBackups {
+    fn drop(&mut self) {
+        if self.restore_on_drop {
+            let _ = self.restore();
         }
     }
-    Ok(())
 }
 
 fn validate_bam_sidecar_paths(
@@ -1027,7 +1158,55 @@ fn json_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_color_with_terminal, ColorMode, OutputFormat};
+    use super::{
+        should_color_with_terminal, ColorMode, OldIndexBackups, OutputFormat, NEXT_INDEX_BACKUP_ID,
+    };
+    use std::fs;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn old_indexes_are_restored_before_bam_publication() {
+        let directory = std::env::temp_dir().join(format!(
+            "qbix-restore-index-test-{}-{}",
+            std::process::id(),
+            NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let bam = directory.join("output.bam");
+        let bai = format!("{}.bai", bam.display());
+        let csi = format!("{}.csi", bam.display());
+        fs::write(&bai, b"old BAI").unwrap();
+        fs::write(&csi, b"old CSI").unwrap();
+        let sidecars = [bai.clone(), csi.clone()];
+        {
+            let _backups = OldIndexBackups::stage(&sidecars).unwrap();
+            assert!(!std::path::Path::new(&bai).exists());
+            assert!(!std::path::Path::new(&csi).exists());
+        }
+        assert_eq!(fs::read(&bai).unwrap(), b"old BAI");
+        assert_eq!(fs::read(&csi).unwrap(), b"old CSI");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn old_indexes_are_discarded_after_bam_publication() {
+        let directory = std::env::temp_dir().join(format!(
+            "qbix-discard-index-test-{}-{}",
+            std::process::id(),
+            NEXT_INDEX_BACKUP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let bam = directory.join("output.bam");
+        let bai = format!("{}.bai", bam.display());
+        let sidecars = [bai.clone(), format!("{}.csi", bam.display())];
+        fs::write(&bai, b"old BAI").unwrap();
+        let mut backups = OldIndexBackups::stage(&sidecars).unwrap();
+        backups.bam_published();
+        backups.discard().unwrap();
+        assert!(!std::path::Path::new(&bai).exists());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     #[cfg(not(feature = "biosyntax"))]

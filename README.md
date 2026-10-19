@@ -189,6 +189,10 @@ alongside it (or `.csi` when a reference is longer than 512 Mbp). Use
 `--no-index` to skip the index, or `--query-order` to request query-order BAM
 output; query-order output is not indexed. BAM output to stdout has no sidecar
 index.
+When replacing a BAM, qbix moves any old `.bai`/`.csi` aside before publishing
+the new BAM. If interrupted before publishing the new index, the BAM may be left
+without a coordinate index, but not with the old one beside the requested
+output path.
 
 When `-o` names a file, qbix writes to a temporary file beside it and replaces
 the destination only after successful output. A read or write error leaves an

@@ -35,6 +35,7 @@ const ARG_READNAMES_FILE: &str = "readnames_file";
 const ARG_UNIQUE: &str = "unique";
 const ARG_MISSING: &str = "missing";
 const ARG_WITH_HEADER: &str = "with_header";
+const ARG_EXPR: &str = "expr";
 const ARG_OUTPUT_BAM: &str = "output_bam";
 const ARG_OUTPUT_FORMAT: &str = "output_format";
 const ARG_OUTPUT: &str = "output";
@@ -187,6 +188,7 @@ struct GetAction {
     readnames_file: Option<String>,
     unique: bool,
     with_header: bool,
+    expr: Option<String>,
     threads: usize,
     order: GetOrder,
     no_index: bool,
@@ -219,6 +221,7 @@ fn action_from_matches(matches: &ArgMatches) -> Result<Action> {
                 readnames_file: optional_string(matches, ARG_READNAMES_FILE),
                 unique: matches.get_flag(ARG_UNIQUE),
                 with_header: matches.get_flag(ARG_WITH_HEADER),
+                expr: optional_string(matches, ARG_EXPR),
                 threads: threads(matches, 1)?,
                 order: get_order(matches, output_format),
                 no_index: matches.get_flag(ARG_NO_INDEX),
@@ -328,6 +331,13 @@ fn get_command() -> Command {
                 .long("with-header")
                 .action(ArgAction::SetTrue)
                 .help("Include a SAM header with qbix provenance"),
+        )
+        .arg(
+            Arg::new(ARG_EXPR)
+                .short('e')
+                .long("expr")
+                .value_name("EXPR")
+                .help("Only output records matching an HTSlib filter expression"),
         )
         .arg(
             Arg::new(ARG_OUTPUT_BAM)
@@ -771,6 +781,7 @@ fn run_get(action: GetAction, command_line: &str) -> Result<()> {
         readnames_file,
         unique,
         with_header,
+        expr,
         threads,
         order,
         no_index,
@@ -786,6 +797,7 @@ fn run_get(action: GetAction, command_line: &str) -> Result<()> {
         no_index,
         unique,
         with_header,
+        expr: expr.as_deref(),
         output_format,
         output_path: output_path.as_deref(),
         missing_path: missing_path.as_deref(),
@@ -984,6 +996,7 @@ mod tests {
                 readnames_file: None,
                 unique: false,
                 with_header: false,
+                expr: None,
                 threads: 4,
                 order: GetOrder::Query,
                 no_index: false,
@@ -1020,6 +1033,7 @@ mod tests {
                 readnames_file: None,
                 unique: false,
                 with_header: true,
+                expr: None,
                 threads: 1,
                 order: GetOrder::Bam,
                 no_index: false,
@@ -1029,6 +1043,25 @@ mod tests {
                 color_mode: ColorMode::Auto,
             })
         );
+    }
+
+    #[test]
+    fn parses_get_filter_expression_aliases() {
+        for option in ["-e", "--expr"] {
+            let action = parse_args(strings([
+                "qbix",
+                "get",
+                option,
+                "flag.dup && mapq >= 20",
+                "reads.bam",
+                "read1",
+            ]))
+            .unwrap();
+            let Action::Get(action) = action else {
+                panic!("expected get action");
+            };
+            assert_eq!(action.expr.as_deref(), Some("flag.dup && mapq >= 20"));
+        }
     }
 
     #[test]
@@ -1044,6 +1077,7 @@ mod tests {
                 readnames_file: None,
                 unique: false,
                 with_header: false,
+                expr: None,
                 threads: 1,
                 order: GetOrder::Bam,
                 no_index: false,
@@ -1095,6 +1129,7 @@ mod tests {
                 readnames_file: Some("names.txt".to_string()),
                 unique: false,
                 with_header: false,
+                expr: None,
                 threads: 1,
                 order: GetOrder::Query,
                 no_index: false,

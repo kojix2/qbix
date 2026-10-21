@@ -20,6 +20,11 @@ struct RawBam1 {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+struct RawFilter {
+    _private: [u8; 0],
+}
+
 extern "C" {
     fn hts_open(path: *const c_char, mode: *const c_char) -> *mut RawHtsFile;
     fn hts_close(fp: *mut RawHtsFile) -> c_int;
@@ -38,6 +43,9 @@ extern "C" {
     fn sam_idx_save(fp: *mut RawHtsFile) -> c_int;
     fn bam_init1() -> *mut RawBam1;
     fn bam_destroy1(b: *mut RawBam1);
+    fn hts_filter_init(expr: *const c_char) -> *mut RawFilter;
+    fn hts_filter_free(filter: *mut RawFilter);
+    fn sam_passes_filter(h: *const RawSamHdr, b: *const RawBam1, filter: *mut RawFilter) -> c_int;
     fn sam_read1(fp: *mut RawHtsFile, h: *mut RawSamHdr, b: *mut RawBam1) -> c_int;
     fn sam_write1(fp: *mut RawHtsFile, h: *const RawSamHdr, b: *const RawBam1) -> c_int;
     fn hts_set_threads(fp: *mut RawHtsFile, n: c_int) -> c_int;
@@ -67,6 +75,34 @@ extern "C" {
 pub(crate) struct HtsFile(*mut RawHtsFile);
 pub(crate) struct Header(*mut RawSamHdr);
 pub(crate) struct BamRecord(*mut RawBam1);
+pub(crate) struct RecordFilter(*mut RawFilter);
+
+impl RecordFilter {
+    pub(crate) fn new(expr: &str) -> Result<Self> {
+        let expr = CString::new(expr)
+            .map_err(|_| "[qbix] filter expression contains a NUL byte".to_string())?;
+        let filter = unsafe { hts_filter_init(expr.as_ptr()) };
+        if filter.is_null() {
+            Err("[qbix] could not initialize filter expression".to_string())
+        } else {
+            Ok(Self(filter))
+        }
+    }
+
+    pub(crate) fn matches(&self, header: &Header, record: &BamRecord) -> Result<bool> {
+        match unsafe { sam_passes_filter(header.0, record.0, self.0) } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err("[qbix] could not evaluate filter expression".to_string()),
+        }
+    }
+}
+
+impl Drop for RecordFilter {
+    fn drop(&mut self) {
+        unsafe { hts_filter_free(self.0) };
+    }
+}
 
 impl HtsFile {
     pub(crate) fn close(mut self) -> Result<()> {

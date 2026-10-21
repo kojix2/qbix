@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 
 use common::{
     bam_index_loads, count_region, read_bam_header, write_coordinate_bam, write_unmapped_bam,
-    write_unmapped_bam_with_header, TempDir,
+    write_unmapped_bam_with_flags, write_unmapped_bam_with_header, TempDir,
 };
 
 #[test]
@@ -502,6 +502,94 @@ fn get_can_include_the_source_header_in_sam_output() {
     assert!(text.contains(concat!("VN:", env!("CARGO_PKG_VERSION"))));
     assert!(text.contains("PN:qbix"));
     assert!(text.contains("CL:"));
+}
+
+#[test]
+fn get_filters_records_after_matching_qnames() {
+    let temp = TempDir::new("get-expr");
+    let bam = temp.path().join("reads.bam");
+    let missing = temp.path().join("missing.txt");
+    let bam = bam.to_str().unwrap();
+    let missing = missing.to_str().unwrap();
+    write_unmapped_bam_with_flags(bam, &[("read_a", 4), ("read_b", 4), ("read_a", 4 | 1024)]);
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    for (order, option) in [("--query-order", "-e"), ("--bam-order", "--expr")] {
+        let get = Command::new(qbix())
+            .args([
+                "get",
+                order,
+                option,
+                "flag.dup",
+                "--missing",
+                missing,
+                bam,
+                "read_a",
+                "read_b",
+                "absent",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            get.status.success(),
+            "{}",
+            String::from_utf8_lossy(&get.stderr)
+        );
+        let rows = String::from_utf8(get.stdout).unwrap();
+        let rows = rows.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with("read_a\t1028\t"));
+        assert_eq!(fs::read_to_string(missing).unwrap(), "absent\n");
+    }
+}
+
+#[test]
+fn get_rejects_invalid_filter_expression_without_replacing_output() {
+    let temp = TempDir::new("get-invalid-expr");
+    let bam = temp.path().join("reads.bam");
+    let output = temp.path().join("out.sam");
+    let bam = bam.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_unmapped_bam(bam, &["read_a"]);
+    assert_success(Command::new(qbix()).args(["index", bam]));
+    fs::write(output, "original\n").unwrap();
+
+    let get = Command::new(qbix())
+        .args(["get", "-e", "flag &&", "-o", output, bam, "read_a"])
+        .output()
+        .unwrap();
+    assert!(!get.status.success());
+    assert!(
+        String::from_utf8_lossy(&get.stderr).contains("filter expression"),
+        "{}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(fs::read_to_string(output).unwrap(), "original\n");
+}
+
+#[test]
+fn get_filter_keeps_bam_output_index_in_sync() {
+    let temp = TempDir::new("get-expr-bam");
+    let bam = temp.path().join("reads.bam");
+    let output = temp.path().join("filtered.bam");
+    let bam = bam.to_str().unwrap();
+    let output = output.to_str().unwrap();
+    write_coordinate_bam(bam, &[("read_a", 10), ("read_b", 40)]);
+    assert_success(Command::new(qbix()).args(["index", bam]));
+
+    assert_success(Command::new(qbix()).args([
+        "get",
+        "--expr",
+        "pos >= 20",
+        "-Ob",
+        "-o",
+        output,
+        bam,
+        "read_a",
+        "read_b",
+    ]));
+    assert!(bam_index_loads(output));
+    assert_eq!(count_region(output, 0, 100), 1);
 }
 
 #[test]

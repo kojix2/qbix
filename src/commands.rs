@@ -1,6 +1,6 @@
 use crate::atomic_output::AtomicOutput;
 use crate::error::Result;
-use crate::hts::{BamRecord, Header, HtsFile, BGZF_CACHE_SIZE};
+use crate::hts::{BamRecord, Header, HtsFile, RecordFilter, BGZF_CACHE_SIZE};
 use crate::index::{
     estimated_qbi1_size, estimated_qbi2_size, generate_index_filename, qname_hash64, BamMetadata,
     BucketIndexBuilder, Index, IndexFormat,
@@ -75,7 +75,17 @@ struct GetContext<'a> {
     out: &'a mut RecordWriter,
     rec: &'a BamRecord,
     index: &'a Index,
+    filter: Option<&'a RecordFilter>,
     missing_out: &'a mut Option<MissingWriter>,
+}
+
+impl GetContext<'_> {
+    fn record_passes_filter(&self) -> Result<bool> {
+        self.filter
+            .map(|filter| filter.matches(self.header, self.rec))
+            .transpose()
+            .map(|result| result.unwrap_or(true))
+    }
 }
 
 pub(crate) struct GetOptions<'a> {
@@ -85,6 +95,7 @@ pub(crate) struct GetOptions<'a> {
     pub(crate) no_index: bool,
     pub(crate) unique: bool,
     pub(crate) with_header: bool,
+    pub(crate) expr: Option<&'a str>,
     pub(crate) output_format: OutputFormat,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) missing_path: Option<&'a str>,
@@ -219,6 +230,7 @@ where
         .map_err(|_| format!("[qbix] could not read BAM header: {input_bam}"))?;
     let bam_metadata = BamMetadata::from_bam(input_bam, header.text_hash()?)?;
     let index = Index::load(Some(input_bam), Some(&input_index), Some(bam_metadata))?;
+    let filter = options.expr.map(RecordFilter::new).transpose()?;
     let output_header = header.duplicate()?;
     if options.order == GetOrder::Query {
         output_header.set_unknown_sort_order()?;
@@ -273,6 +285,7 @@ where
             out: &mut out,
             rec: &rec,
             index: &index,
+            filter: filter.as_ref(),
             missing_out: &mut missing_out,
         };
         if options.order == GetOrder::Query {
@@ -674,7 +687,9 @@ where
                 .read_record_at(context.header, context.rec, file_offset)?;
             if context.rec.qname()? == readname.as_str() {
                 found = true;
-                context.out.write_record(context.header, context.rec)?;
+                if context.record_passes_filter()? {
+                    context.out.write_record(context.header, context.rec)?;
+                }
             }
         }
         if !found {
@@ -729,7 +744,9 @@ fn write_hits_in_bam_order(context: &mut GetContext<'_>, readnames: &[String]) -
             if let Some(found) = &mut found {
                 found[hit.query_index] = true;
             }
-            context.out.write_record(context.header, context.rec)?;
+            if context.record_passes_filter()? {
+                context.out.write_record(context.header, context.rec)?;
+            }
         }
     }
     if let Some(found) = found {

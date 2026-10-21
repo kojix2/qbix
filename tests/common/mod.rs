@@ -123,6 +123,18 @@ pub fn write_unmapped_bam(path: &str, readnames: &[&str]) {
     );
 }
 
+#[allow(dead_code)]
+pub fn write_unmapped_bam_with_flags(path: &str, records: &[(&str, u16)]) {
+    let bam = HtsFile::open(path, "wb");
+    let header = Header::parse("@HD\tVN:1.6\tSO:unknown\n@SQ\tSN:chr1\tLN:1000\n");
+    assert_eq!(unsafe { sam_hdr_write(bam.0, header.0) }, 0);
+    let record = BamRecord::new();
+    for &(name, flag) in records {
+        record.set_unmapped_with_flag(name, flag);
+        assert!(unsafe { sam_write1(bam.0, header.0, record.0) } >= 0);
+    }
+}
+
 pub fn write_unmapped_bam_with_header(path: &str, readnames: &[&str], header_text: &str) {
     let bam = HtsFile::open(path, "wb");
     let header = Header::parse(header_text);
@@ -251,13 +263,17 @@ impl BamRecord {
     }
 
     fn set_unmapped(&self, readname: &str) {
+        self.set_unmapped_with_flag(readname, 4);
+    }
+
+    fn set_unmapped_with_flag(&self, readname: &str, flag: u16) {
         let readname = CString::new(readname).unwrap();
         let ret = unsafe {
             bam_set1(
                 self.0,
                 readname.as_bytes().len(),
                 readname.as_ptr(),
-                4,
+                flag,
                 -1,
                 -1,
                 0,

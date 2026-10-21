@@ -169,6 +169,16 @@ qbix get --unique reads.bam -f names.txt
 This only removes duplicate query names. If the BAM contains multiple records
 for a read name, all of those records are still written.
 
+Filter retrieved records with an HTSlib expression (`-e` or `--expr`):
+
+```sh
+qbix get -e 'flag.dup == 0 && mapq >= 20' reads.bam read_a read_b
+```
+
+The expression is evaluated for each record after its QNAME is matched. See
+[samtools filter expressions](https://www.htslib.org/doc/samtools.html#FILTER_EXPRESSIONS)
+for the available fields, operators, flags, and tags.
+
 Write query names that have no matching BAM record to a newline-delimited file:
 
 ```sh
@@ -177,7 +187,8 @@ qbix get --missing missing.txt reads.bam -f names.txt
 
 Missing names are written in query order. Duplicate queries are reported once
 per occurrence unless `--unique` is also used. The report file is empty when
-all query names are found.
+all query names are found. Records excluded by `--expr` still count as found
+for this report.
 
 Write matching records as BAM:
 

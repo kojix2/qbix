@@ -324,6 +324,7 @@ fn get_command() -> Command {
         )
         .arg(
             Arg::new(ARG_WITH_HEADER)
+                .short('H')
                 .long("with-header")
                 .action(ArgAction::SetTrue)
                 .help("Include a SAM header with qbix provenance"),
@@ -1005,7 +1006,7 @@ mod tests {
             "hits.bam",
             "--missing",
             "missing.txt",
-            "--with-header",
+            "-H",
             "read1",
         ]))
         .unwrap();

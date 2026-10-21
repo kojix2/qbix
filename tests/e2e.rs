@@ -488,7 +488,7 @@ fn get_can_include_the_source_header_in_sam_output() {
     assert_success(Command::new(qbix()).args(["index", bam]));
 
     let get = Command::new(qbix())
-        .args(["get", "--with-header", bam, "read_a"])
+        .args(["get", "-H", bam, "read_a"])
         .output()
         .unwrap();
     assert!(

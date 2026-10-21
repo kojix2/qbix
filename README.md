@@ -135,7 +135,7 @@ qbix get reads.bam read_a read_b
 ```
 
 SAM output contains matching alignment records without the SAM header by
-default. Use `--with-header` to include a header based on the source BAM. BAM output
+default. Use `-H` (`--with-header`) to include a header based on the source BAM. BAM output
 always includes it.
 When a header is written, `qbix get` adds an `@PG` record with its version and
 command line. Query-order output sets `@HD SO:unknown` and removes `SS` and `GO`, since
@@ -143,7 +143,7 @@ query order may differ from the input sort order. `--bam-order` preserves the
 input `@HD` sort metadata.
 
 ```sh
-qbix get --with-header reads.bam read_a read_b
+qbix get -H reads.bam read_a read_b
 ```
 
 Fetch records from a newline-delimited read-name file:
